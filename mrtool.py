@@ -33,6 +33,16 @@ Research / broad queries (the "crawler" surface):
   python3 mrtool.py fetch X8A X8B --store    # bulk-fetch ids into the store
   python3 mrtool.py fetch --from-file ids.txt --store --delay 2
   python3 mrtool.py rankings --event PV --age M40 --year 2026 --n 10 --json
+
+Two-machine coordination (browser on machine A, research/agent on machine B):
+  # A (has a browser):  auth, then...
+  python3 mrtool.py export-session          # -> mrtool-session-<stamp>.tar.gz
+  # move the file to B, then B:
+  python3 mrtool.py import-session mrtool-session-<stamp>.tar.gz
+  python3 mrtool.py check                   # does the session pass CF from here?
+  # if check fails (CF bound the token to A's IP), use the split setup instead:
+  python3 mrtool.py sync-export             # A: tar up store.db + registry
+  # move to B:  python3 mrtool.py sync-import mrtool-sync-<stamp>.tar.gz
 """
 
 import argparse
@@ -42,6 +52,7 @@ import os
 import re
 import shutil
 import sys
+import tarfile
 import time
 import uuid
 from pathlib import Path
@@ -755,6 +766,152 @@ def cmd_rankings(args) -> None:
 
 # ------------------------------------------------------------------- main ---
 
+# ------------------------------------------- two-machine coordination -------
+#
+# The browser (and therefore the one-time `auth`) can only run where there is
+# a display and a residential IP. The research store + agent can live anywhere.
+# These commands move the *state* between the two machines:
+#
+#   export-session / import-session  move the browser session (cookies + the
+#                                    Cloudflare clearance) so headless fetches
+#                                    can run on the second machine
+#   check                            does this session actually pass CF *here*?
+#   sync-export   / sync-import      move the research data (store.db +
+#                                    registry) the other way — for the split
+#                                    setup where fetching stays on machine A
+
+
+def _profile_locked() -> bool:
+    """True if the browser profile has live lock files (a browser is using it)."""
+    if not PROFILE_DIR.exists():
+        return False
+    for p in PROFILE_DIR.rglob("*"):
+        if p.name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            return True
+    return False
+
+
+def _tar_filter(exclude_names) -> "callable":
+    def f(ti):
+        parts = Path(ti.name).parts
+        if any(part in exclude_names for part in parts):
+            return None
+        return ti
+    return f
+
+
+def _extract_tar(tf, dest: Path) -> None:
+    try:
+        tf.extractall(dest, filter="data")   # py>=3.12 safe extraction
+    except TypeError:
+        tf.extractall(dest)                 # older python: no filter kwarg
+
+
+SESSION_SKIP = {"SingletonLock", "SingletonSocket", "SingletonCookie",
+                "Crashpad", "GPUPersistentCache"}
+
+
+def cmd_export_session(args) -> None:
+    """Tar up the browser profile/ (cookies + CF clearance) for transfer."""
+    if not PROFILE_DIR.exists():
+        sys.exit("error: no profile/ yet — run `auth` first (on the machine "
+                 "that has the browser)")
+    if _profile_locked():
+        sys.exit("error: the browser profile is in use (lock files present).\n"
+                 "        Close the browser / stop any running mrtool, then retry.")
+    out = (Path(args.out) if args.out
+           else Path.cwd() / f"mrtool-session-{now_stamp()}.tar.gz")
+    with tarfile.open(out, "w:gz") as tf:
+        tf.add(PROFILE_DIR, arcname="profile", filter=_tar_filter(SESSION_SKIP))
+    log(f"session exported -> {out}  ({out.stat().st_size/1024:.0f} KB)")
+    log("Move that file to the other machine, then there run:")
+    log(f"  python3 mrtool.py import-session {out.name}")
+    log("  python3 mrtool.py check")
+
+
+def cmd_import_session(args) -> None:
+    """Extract a session tarball into profile/, replacing any existing one."""
+    src = Path(args.file)
+    if not src.exists():
+        sys.exit(f"error: no such file: {src}")
+    if _profile_locked():
+        sys.exit("error: browser profile in use — close the browser first.")
+    if PROFILE_DIR.exists():
+        bak = PROFILE_DIR.with_name(f"profile.bak-{now_stamp()}")
+        shutil.move(str(PROFILE_DIR), str(bak))
+        log(f"existing profile/ moved aside -> {bak.name}")
+    with tarfile.open(src, "r:gz") as tf:
+        _extract_tar(tf, ROOT)
+    log(f"session imported from {src.name}")
+    log("Now verify it works from THIS machine's network:")
+    log("  python3 mrtool.py check")
+
+
+def cmd_check(args) -> None:
+    """Headless probe: does the current profile pass Cloudflare from here?"""
+    if not PROFILE_DIR.exists() or not any(PROFILE_DIR.iterdir()):
+        sys.exit("error: no profile/ — import a session first "
+                 "(import-session FILE) or run `auth`")
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        ctx, page = launch(p, args, headless=True)
+        page.goto(BASE_URL + RANKINGS_PATH, wait_until="domcontentloaded")
+        time.sleep(5)
+        title, html = page.title(), page.content()
+        cookies = ctx.cookies()
+        cf = [c["name"] for c in cookies
+              if c["name"].startswith(("cf_", "PHPSESSID", "wordpress"))]
+        ctx.close()
+    if is_challenge(title, html):
+        log("CHECK FAILED — still seeing a Cloudflare challenge from this machine.")
+        log(f"  title={title!r}  cookies={cf or '(none)'}")
+        log("The clearance likely did not carry over (Cloudflare often binds its")
+        log("token to the IP / fingerprint that earned it). Use the split setup:")
+        log("  - keep fetching on your machine, then `sync-export` + `sync-import` here, OR")
+        log("  - re-run `auth` here if this machine has a browser you can drive.")
+        sys.exit(2)
+    log(f"CHECK PASSED — the session works from this machine. title={title!r}")
+    log(f"cookies present: {cf or '(none matched common names)'}")
+    log("You can now run headless:  python3 mrtool.py fetch <ids> --store")
+
+
+def cmd_sync_export(args) -> None:
+    """Tar up the research data (store.db + registry [+ data/]) for transfer."""
+    db = _db_path()
+    out = (Path(args.out) if args.out
+           else Path.cwd() / f"mrtool-sync-{now_stamp()}.tar.gz")
+    with tarfile.open(out, "w:gz") as tf:
+        if db.exists():
+            tf.add(db, arcname="store.db")
+            for sib in (db.parent / f"{db.name}-wal", db.parent / f"{db.name}-shm",
+                        db.parent / f"{db.name}-journal"):
+                if sib.exists():
+                    tf.add(sib, arcname=sib.name)
+        if REGISTRY_PATH.exists():
+            tf.add(REGISTRY_PATH, arcname="athletes.json")
+        if args.with_data and DATA_DIR.exists():
+            tf.add(DATA_DIR, arcname="data")
+    log(f"sync exported -> {out}  ({out.stat().st_size/1024:.0f} KB)")
+    log("Move it to the research machine, then:")
+    log(f"  python3 mrtool.py sync-import {out.name}")
+
+
+def cmd_sync_import(args) -> None:
+    """Extract a sync tarball (store.db + registry) into this checkout."""
+    src = Path(args.file)
+    if not src.exists():
+        sys.exit(f"error: no such file: {src}")
+    db = _db_path()
+    if db.exists():
+        bak = db.with_name(f"{db.name}.bak-{now_stamp()}")
+        shutil.move(str(db), str(bak))
+        log(f"existing store.db moved aside -> {bak.name}")
+    with tarfile.open(src, "r:gz") as tf:
+        _extract_tar(tf, ROOT)
+    log(f"sync imported from {src.name}")
+    log("Verify:  python3 mrtool.py store")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -821,10 +978,31 @@ def main() -> None:
     pp.add_argument("--name", help="athlete name to use for storage/registry")
     pp.add_argument("--register", action="store_true", help="also add to registry")
 
+    es = sub.add_parser("export-session",
+                        help="tar up the browser session (cookies + CF clearance)")
+    es.add_argument("out", nargs="?", help="output file (default: mrtool-session-<stamp>.tar.gz)")
+
+    im = sub.add_parser("import-session", help="install a session tarball into profile/")
+    im.add_argument("file", help="the mrtool-session-*.tar.gz to install")
+
+    sub.add_parser("check", help="does the current profile pass Cloudflare from here? (headless)")
+
+    sx = sub.add_parser("sync-export",
+                        help="tar up the research data (store.db + registry)")
+    sx.add_argument("out", nargs="?", help="output file (default: mrtool-sync-<stamp>.tar.gz)")
+    sx.add_argument("--with-data", action="store_true",
+                    help="also include raw capture evidence (data/) — bigger")
+
+    si = sub.add_parser("sync-import", help="install a sync tarball into this checkout")
+    si.add_argument("file", help="the mrtool-sync-*.tar.gz to install")
+
     args = ap.parse_args()
     {"auth": cmd_auth, "search": cmd_search, "refresh": cmd_refresh,
      "list": cmd_list, "profile": cmd_profile, "store": cmd_store,
-     "fetch": cmd_fetch, "rankings": cmd_rankings}[args.cmd](args)
+     "fetch": cmd_fetch, "rankings": cmd_rankings,
+     "export-session": cmd_export_session, "import-session": cmd_import_session,
+     "check": cmd_check, "sync-export": cmd_sync_export,
+     "sync-import": cmd_sync_import}[args.cmd](args)
 
 
 if __name__ == "__main__":

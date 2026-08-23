@@ -114,8 +114,59 @@ hard-cached pull of the specific cohorts you ask about is reference use. Don't
 mirror large fractions of the DB or train on it. `fetch` rate-limits
 (`--delay`) and the store dedupes, so re-runs stay cheap and polite.
 
-## Run it on the right machine
+## Running on two machines (browser machine + research machine)
 
-The one-time `auth` needs a display, and Cloudflare clears far more reliably
-from a residential IP than a datacenter one. Run it on the machine whose
-network you already pass (the saved profile only helps there).
+`auth` needs a **display** and a **residential IP**, so it can only run on the
+machine whose browser you already use (call it **A**). The store and the
+research agent can live on any other machine (call it **B** — e.g. a server).
+The tool ships with commands to move state between the two. You get a choice
+of two patterns — try A first, fall back to B if Cloudflare won't allow it.
+
+### Pattern 1 — carry the session over (whole tool runs on B)
+
+The entire Cloudflare session lives in one directory: `profile/` (Playwright's
+persistent browser profile — cookies, storage, the CF clearance token). It's
+portable.
+
+```bash
+# on A (has the browser):
+./venv/bin/python mrtool.py auth                 # one-time human step
+./venv/bin/python mrtool.py export-session       # -> mrtool-session-<stamp>.tar.gz
+# copy that tarball to B (scp / usb / however), then on B:
+./venv/bin/python mrtool.py import-session mrtool-session-<stamp>.tar.gz
+./venv/bin/python mrtool.py check                # <-- the honest test
+```
+
+`check` loads a page headlessly **from B's own network** and reports
+PASS/FAIL. This matters because **Cloudflare often binds its clearance token to
+the IP / fingerprint that earned it** — so a session that works on A can still
+403 on B. `check` is the only way to know for sure.
+
+- **PASS** → you're done: run everything (search/fetch/rankings) headless on B.
+- **FAIL** → use Pattern 2.
+
+### Pattern 2 — split roles (fetch on A, research on B)
+
+If the session won't carry over, keep the parts that need the good network on
+A, and move only the *results* to B:
+
+```bash
+# on A: do the fetching (session already valid here)
+./venv/bin/python mrtool.py fetch <ids> --store --delay 2
+./venv/bin/python mrtool.py sync-export          # -> mrtool-sync-<stamp>.tar.gz
+# copy to B, then:
+./venv/bin/python mrtool.py sync-import mrtool-sync-<stamp>.tar.gz
+./venv/bin/python mrtool.py store                # query the synced data
+```
+
+`sync-*` moves `store.db` + `athletes.json` (the research memory), not the
+browser. B (and the agent on it) does all the SQL/analysis; A is just the hand
+that pulls pages. Both patterns coexist — you can `fetch` on A and `check`
+passes on B at the same time; each machine uses whatever state it has.
+
+### What never leaves A
+
+`profile/` (your CF cookies / login) is git-ignored and is the one secret.
+The session tarball you move between machines contains it — transfer it over a
+channel you trust and delete it from A's disk when you're done. `store.db`,
+`athletes.json`, and the `sync`/`session` bundles are all git-ignored too.

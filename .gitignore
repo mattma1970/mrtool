@@ -5,6 +5,15 @@
 # browser profile — contains Cloudflare cookies / login session.
 # MUST NOT be committed anywhere.
 profile/
+profile.bak-*/
+
+# session + sync transfer bundles (contain cookies / research data)
+mrtool-session-*.tar.gz
+mrtool-sync-*.tar.gz
+session-*.tar.gz
+
+# store backups made by sync-import
+store.db.bak-*
 
 # raw capture evidence — big, re-fetchable, excluded from VCS
 data/
