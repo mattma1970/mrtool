@@ -934,31 +934,47 @@ def cmd_sync_import(args) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    # --browser/--headed are accepted both before and after the subcommand
+    # (mrtool.py --browser chrome auth  ==  mrtool.py auth --browser chrome).
+    # The subparser copies live with default=SUPPRESS so that, when the flag is
+    # only given before the subcommand, the top-level value is not clobbered
+    # by a subparser default (the classic argparse subparser pitfall).
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--browser", choices=["chromium", "chrome", "msedge"],
+                        default=argparse.SUPPRESS,
+                        help="browser engine (default: playwright's bundled chromium)")
+    common.add_argument("--headed", action="store_true", default=argparse.SUPPRESS,
+                        help="run with a visible window (fallback if headless hits Cloudflare)")
     ap.add_argument("--browser", choices=["chromium", "chrome", "msedge"],
                     default="chromium",
-                    help="browser engine (default: playwright's bundled chromium)")
+                    help=argparse.SUPPRESS)
     ap.add_argument("--headed", action="store_true",
-                    help="run with a visible window (fallback if headless hits Cloudflare)")
+                    help=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("auth", help="one-time: open browser, pass Cloudflare, verify session")
+    sub.add_parser("auth", parents=[common],
+                   help="one-time: open browser, pass Cloudflare, verify session")
 
-    sp = sub.add_parser("search", help="search an athlete by name; register the chosen one")
+    sp = sub.add_parser("search", parents=[common],
+                        help="search an athlete by name; register the chosen one")
     sp.add_argument("name")
     sp.add_argument("--pick", type=int, help="candidate number (1-based) for non-interactive runs")
     sp.add_argument("--force", action="store_true", help="re-run search even if already registered")
 
-    rp = sub.add_parser("refresh", help="re-capture profile(s) for registered athletes")
+    rp = sub.add_parser("refresh", parents=[common],
+                        help="re-capture profile(s) for registered athletes")
     rp.add_argument("name", nargs="?", default=None,
                     help="athlete name (default: all)")
     rp.add_argument("--all", action="store_true", default=None)
     rp.add_argument("--store", action="store_true",
                     help="upsert parsed rows into store.db (default: evidence only)")
 
-    lp = sub.add_parser("list", help="show registry and latest capture status")
+    lp = sub.add_parser("list", parents=[common],
+                        help="show registry and latest capture status")
     lp.add_argument("--json", action="store_true", help="emit JSON (for the agent)")
 
-    stp = sub.add_parser("store", help="query the local research store (SQLite)")
+    stp = sub.add_parser("store", parents=[common],
+                         help="query the local research store (SQLite)")
     stp.add_argument("--query", help="run a SQL statement; rows print as JSON")
     stp.add_argument("--history", metavar="X8ID",
                      help="print one athlete's performance history as JSON")
@@ -968,7 +984,7 @@ def main() -> None:
                      help="top-N from latest ranking, e.g. 'PV|M40'")
     stp.add_argument("--n", type=int, default=10, help="N for --top (default 10)")
 
-    fp = sub.add_parser("fetch",
+    fp = sub.add_parser("fetch", parents=[common],
                         help="bulk-fetch x8 ids / profile urls into the store")
     fp.add_argument("ids", nargs="*", help="x8 ids and/or full profile urls")
     fp.add_argument("--from-file", help="file with one id/url per line")
@@ -983,7 +999,7 @@ def main() -> None:
     fp.add_argument("--force", action="store_true",
                     help="re-fetch even if already captured recently")
 
-    rk = sub.add_parser("rankings",
+    rk = sub.add_parser("rankings", parents=[common],
                         help="capture + parse a rankings page for a cohort")
     rk.add_argument("--event", help="event code, e.g. PV, LJ, 10000M")
     rk.add_argument("--age", help="age group, e.g. M40, W45")
@@ -994,27 +1010,31 @@ def main() -> None:
                     help="upsert top-N into store.rankings")
     rk.add_argument("--json", action="store_true", help="emit JSON (for the agent)")
 
-    pp = sub.add_parser("profile", help="capture a profile page by direct URL")
+    pp = sub.add_parser("profile", parents=[common],
+                        help="capture a profile page by direct URL")
     pp.add_argument("url")
     pp.add_argument("--name", help="athlete name to use for storage/registry")
     pp.add_argument("--register", action="store_true", help="also add to registry")
 
-    es = sub.add_parser("export-session",
+    es = sub.add_parser("export-session", parents=[common],
                         help="tar up the browser session (cookies + CF clearance)")
     es.add_argument("out", nargs="?", help="output file (default: mrtool-session-<stamp>.tar.gz)")
 
-    im = sub.add_parser("import-session", help="install a session tarball into profile/")
+    im = sub.add_parser("import-session", parents=[common],
+                        help="install a session tarball into profile/")
     im.add_argument("file", help="the mrtool-session-*.tar.gz to install")
 
-    sub.add_parser("check", help="does the current profile pass Cloudflare from here? (headless)")
+    sub.add_parser("check", parents=[common],
+                   help="does the current profile pass Cloudflare from here? (headless)")
 
-    sx = sub.add_parser("sync-export",
+    sx = sub.add_parser("sync-export", parents=[common],
                         help="tar up the research data (store.db + registry)")
     sx.add_argument("out", nargs="?", help="output file (default: mrtool-sync-<stamp>.tar.gz)")
     sx.add_argument("--with-data", action="store_true",
                     help="also include raw capture evidence (data/) — bigger")
 
-    si = sub.add_parser("sync-import", help="install a sync tarball into this checkout")
+    si = sub.add_parser("sync-import", parents=[common],
+                        help="install a sync tarball into this checkout")
     si.add_argument("file", help="the mrtool-sync-*.tar.gz to install")
 
     args = ap.parse_args()
