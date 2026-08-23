@@ -463,8 +463,12 @@ def cmd_refresh(args) -> None:
             out = _capture_one(ctx, page, a, slug)
             if out is None:
                 break
+            if getattr(args, "store", False) and a.get("x8"):
+                summary = _store_capture(out, a["x8"], store=True)
+                log(f"   stored={summary.get('stored', 0)} "
+                    f"needs_review={summary.get('needs_review')}")
         ctx.close()
-    log("done.")
+    log("done. Inspect with:  python3 mrtool.py store")
 
 
 def cmd_list(args) -> None:
@@ -933,6 +937,8 @@ def main() -> None:
     rp.add_argument("name", nargs="?", default=None,
                     help="athlete name (default: all)")
     rp.add_argument("--all", action="store_true", default=None)
+    rp.add_argument("--store", action="store_true",
+                    help="upsert parsed rows into store.db (default: evidence only)")
 
     lp = sub.add_parser("list", help="show registry and latest capture status")
     lp.add_argument("--json", action="store_true", help="emit JSON (for the agent)")
