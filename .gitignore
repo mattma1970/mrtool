@@ -1,0 +1,22 @@
+# environment — rebuilt by install.sh
+.venv/
+.browsers/
+
+# browser profile — contains Cloudflare cookies / login session.
+# MUST NOT be committed anywhere.
+profile/
+
+# raw capture evidence — big, re-fetchable, excluded from VCS
+data/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+
+# editor/OS
+.DS_Store
+*.swp
+
+# NOTE: store.db and athletes.json are intentionally tracked — they are the
+# accumulated research memory (small, no secrets) and doubling as backup.
