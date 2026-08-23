@@ -12,6 +12,12 @@ mrtool-session-*.tar.gz
 mrtool-sync-*.tar.gz
 session-*.tar.gz
 
+# cookie exports (contain cf_clearance / session cookies) — never commit
+cookies*.json
+*.cookies.json
+cookies.txt
+*cookies*.txt
+
 # store backups made by sync-import
 store.db.bak-*
 

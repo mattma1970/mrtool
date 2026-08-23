@@ -88,6 +88,57 @@ def test_js_candidate_snippet():
     print("ok candidate JS snippet balance")
 
 
+def test_cookie_parsers(tmp):
+    """cookie-import must parse the common export shapes into Playwright dicts."""
+    import tempfile
+    d = Path(tempfile.mkdtemp())
+
+    # JSON array (typical browser-extension export), mixed-case-safe keys
+    p1 = d / "arr.json"
+    p1.write_text(json.dumps([
+        {"domain": ".mastersrankings.com", "httpOnly": True, "name": "cf_clearance",
+         "path": "/", "sameSite": "none", "secure": True, "value": "A1",
+         "expirationDate": 1750000000.5},
+        {"domain": ".mastersrankings.com", "name": "PHPSESSID", "value": "xyz",
+         "path": "/", "secure": False, "httpOnly": True, "expirationDate": 0},
+        {"domain": ".other.com", "name": "junk", "value": "nope", "path": "/"},
+    ]), encoding="utf-8")
+    c = mrtool._parse_cookie_file(p1)
+    cf = next(x for x in c if x["name"] == "cf_clearance")
+    assert cf["expires"] == 1750000000 and cf["secure"] is True
+    assert cf["httpOnly"] is True and cf["sameSite"] == "None", cf
+    assert next(x for x in c if x["name"] == "PHPSESSID")["expires"] == -1
+    # default domain filter keeps only the relevant cookies
+    kept = [x["name"] for x in c
+            if "mastersrankings.com" in x["domain"]
+            or x["name"].lower().startswith("cf_clearance")]
+    assert kept == ["cf_clearance", "PHPSESSID"], kept
+
+    # JSON object wrapping the list under "cookies"
+    p2 = d / "wrap.json"
+    p2.write_text(json.dumps({"cookies": [
+        {"Name": "cf_clearance", "Value": "B2", "Domain": ".mastersrankings.com",
+         "Path": "/", "Secure": True, "HttpOnly": True,
+         "SameSite": "Lax", "Expires": 1750000000},
+    ]}), encoding="utf-8")
+    c = mrtool._parse_cookie_file(p2)
+    assert len(c) == 1 and c[0]["name"] == "cf_clearance"
+    assert c[0]["sameSite"] == "Lax" and c[0]["expires"] == 1750000000, c
+
+    # Netscape cookies.txt
+    p3 = d / "c.txt"
+    p3.write_text(
+        "# Netscape HTTP Cookie File\n"
+        ".mastersrankings.com\tTRUE\t/\tTRUE\t1750000000\tcf_clearance\tC3\n"
+        ".mastersrankings.com\tFALSE\t/\tFALSE\t0\twordpress_logged_in\tdd\n"
+        "   \n", encoding="utf-8")
+    c = mrtool._parse_cookie_file(p3)
+    assert len(c) == 2, c
+    ccf = next(x for x in c if x["name"] == "cf_clearance")
+    assert ccf["secure"] is True and ccf["expires"] == 1750000000, ccf
+    print("ok cookie parsers (json array / wrapped / cookies.txt)")
+
+
 def main():
     tmp = Path(__file__).parent
     test_slugify()
@@ -97,6 +148,7 @@ def main():
     test_candidate_dedup_logic()
     test_registry_roundtrip(tmp)
     test_js_candidate_snippet()
+    test_cookie_parsers(tmp)
     print("\nall core logic tests passed")
 
 

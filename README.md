@@ -119,8 +119,40 @@ mirror large fractions of the DB or train on it. `fetch` rate-limits
 `auth` needs a **display** and a **residential IP**, so it can only run on the
 machine whose browser you already use (call it **A**). The store and the
 research agent can live on any other machine (call it **B** — e.g. a server).
-The tool ships with commands to move state between the two. You get a choice
-of two patterns — try A first, fall back to B if Cloudflare won't allow it.
+The tool ships with commands to move state between the two.
+
+If the **launched** browser (the one `auth` opens) gets stuck on the
+Cloudflare wall while your **normal** browser loads the site fine, Cloudflare
+is detecting the automation. The cleanest fix is the **cookie relay** below —
+pass Cloudflare in your trusted browser, then hand the cookies to the tool.
+
+### Cookie relay — when the launched browser is flagged but your normal one works
+
+Cloudflare only runs its challenge (the "Just a moment…" wall) when a request
+has no valid clearance. While that challenge is on screen, the page can see a
+DevTools client attached and fails. But once a valid `cf_clearance` cookie is
+already in the jar, **no challenge is ever issued** — so the automation is never
+noticed. The relay puts you in that state by borrowing the clearance your
+trusted browser already earned:
+
+```bash
+# 1. In your NORMAL browser: open mastersrankings.com and let it clear CF.
+# 2. Use your cookie-copy extension to export that tab's cookies to a file
+#    (JSON array or cookies.txt both work). Make sure HttpOnly cookies are
+#    included — cf_clearance is one of them.
+# 3. On machine A, inject them into the tool's profile:
+.venv/Scripts/python mrtool.py cookie-import cookies.json
+#    (Linux/macOS: ./.venv/bin/python mrtool.py cookie-import cookies.json)
+# 4. Verify from A:
+.venv/Scripts/python mrtool.py check
+```
+
+By default only `mastersrankings.com` cookies are imported (use
+`--all-domains` to keep everything). Because the clearance is typically bound
+to the **IP + TLS fingerprint** that earned it, this is reliable when you run
+`cookie-import` + `check` on the **same machine** that passed Cloudflare
+(machine A). Importing the same file onto machine B (a different IP) is a
+gamble that `check` will settle — if it fails there, fall through to Pattern 2.
 
 ### Pattern 1 — carry the session over (whole tool runs on B)
 
@@ -166,7 +198,8 @@ passes on B at the same time; each machine uses whatever state it has.
 
 ### What never leaves A
 
-`profile/` (your CF cookies / login) is git-ignored and is the one secret.
-The session tarball you move between machines contains it — transfer it over a
-channel you trust and delete it from A's disk when you're done. `store.db`,
-`athletes.json`, and the `sync`/`session` bundles are all git-ignored too.
+`profile/` (your CF cookies / login) is git-ignored and is the one secret. The
+session tarball and any **cookie export** you move around contain it — transfer
+them over a channel you trust and delete them from A's disk when you're done.
+`store.db`, `athletes.json`, and the `sync`/`session`/`cookies` bundles are all
+git-ignored too.

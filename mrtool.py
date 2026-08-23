@@ -35,6 +35,11 @@ Research / broad queries (the "crawler" surface):
   python3 mrtool.py rankings --event PV --age M40 --year 2026 --n 10 --json
 
 Two-machine coordination (browser on machine A, research/agent on machine B):
+  # Cookie relay: the LAUNCHED browser is stuck on the CF wall but your
+  # NORMAL browser loads the site. Pass CF normally, export that tab's
+  # cookies (HttpOnly included), then:
+  python3 mrtool.py cookie-import cookies.json   # inject into profile/
+  python3 mrtool.py check                        # does it pass CF from here?
   # A (has a browser):  auth, then...
   python3 mrtool.py export-session          # -> mrtool-session-<stamp>.tar.gz
   # move the file to B, then B:
@@ -899,6 +904,157 @@ def cmd_check(args) -> None:
     log("You can now run headless:  python3 mrtool.py fetch <ids> --store")
 
 
+def _parse_netscape(text: str):
+    """Parse Netscape/Mozilla cookies.txt into raw cookie dicts."""
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 7:
+            continue
+        domain, _flag, path, secure, expires, name, value = parts[:7]
+        c = {"name": name, "value": value, "domain": domain, "path": path or "/"}
+        try:
+            expf = float(expires)
+        except (TypeError, ValueError):
+            expf = 0.0
+        c["expires"] = int(expf) if expf > 0 else -1
+        if secure.strip().upper() in ("TRUE", "1"):
+            c["secure"] = True
+        out.append(c)
+    return out
+
+
+def _parse_cookie_file(path: Path):
+    """Parse a cookie export into Playwright-ready cookie dicts.
+
+    Accepts (in order): a JSON array of cookie objects, a JSON object that
+    wraps the list under a common key, or Netscape cookies.txt. Key names are
+    matched case-insensitively so most browser-extension exports work as-is.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    data = None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = None
+    if data is not None:
+        if isinstance(data, dict):
+            for key in ("cookies", "data", "items", "list", "results"):
+                if isinstance(data.get(key), list):
+                    data = data[key]
+                    break
+            if isinstance(data, dict):  # a single cookie object
+                data = [data]
+        if not isinstance(data, list):
+            sys.exit(f"error: could not find a cookie list in {path}\n"
+                     "        (expected a JSON array of {name,value,domain,...}, "
+                     "a JSON object with a 'cookies' list, or cookies.txt)")
+        raw = data
+    else:
+        raw = _parse_netscape(text)
+        if not raw:
+            sys.exit(f"error: could not parse {path} as JSON or cookies.txt")
+
+    cookies = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        g = {str(k).lower(): v for k, v in item.items()}
+        name = g.get("name")
+        value = g.get("value")
+        domain = g.get("domain")
+        if not name or value is None or not domain:
+            continue
+        c = {"name": str(name), "value": str(value), "domain": str(domain),
+             "path": g.get("path") or "/"}
+        exp = g.get("expires", g.get("expirationdate", g.get("expires_utc")))
+        try:
+            expf = float(exp)
+        except (TypeError, ValueError):
+            expf = 0.0
+        # Some exports use a different epoch (e.g. WebKit's 2001-01-01).
+        if 0 < expf < 1e9:
+            expf += 978307200  # -> Unix epoch
+        c["expires"] = int(expf) if expf > 0 else -1  # -1 = session cookie
+        if g.get("httponly") in (True, "true", "True", 1):
+            c["httpOnly"] = True
+        if g.get("secure") in (True, "true", "True", 1):
+            c["secure"] = True
+        ss = g.get("samesite", g.get("same_site"))
+        if ss:
+            ss = str(ss).capitalize()
+            if ss in ("Strict", "Lax", "None"):
+                c["sameSite"] = ss
+        cookies.append(c)
+    return cookies
+
+
+def cmd_cookie_import(args) -> None:
+    """Inject cookies exported from a working browser into profile/.
+
+    This is the 'pass Cloudflare in my trusted browser, then hand the cookies
+    to the tool' path. It sidesteps CDP/automation detection because, once a
+    valid cf_clearance is in the jar, Cloudflare issues no new challenge —
+    and a challenge is the only place the automation is noticed.
+
+    NOTE: cf_clearance is typically bound to the IP (and TLS fingerprint) that
+    earned it. Running this on the SAME machine that passed Cloudflare is the
+    reliable case; importing it to a different IP (e.g. this research server)
+    is a gamble that `check` will settle.
+    """
+    src = Path(args.file)
+    if not src.exists():
+        sys.exit(f"error: no such file: {src}")
+    if _profile_locked():
+        sys.exit("error: browser profile in use — close the browser first.")
+    cookies = _parse_cookie_file(src)
+    if not cookies:
+        sys.exit(f"error: no usable cookies found in {src}")
+    if not args.all_domains:
+        before = len(cookies)
+        cookies = [c for c in cookies
+                   if "mastersrankings.com" in c["domain"]
+                   or c["name"].lower().startswith("cf_clearance")]
+        if not cookies:
+            sys.exit(f"error: none of the {before} cookies belong to mastersrankings.com.\n"
+                     "        Re-export from the tab sitting on mastersrankings.com, "
+                     "or pass --all-domains to keep everything.")
+        dropped = before - len(cookies)
+        if dropped:
+            log(f"kept {len(cookies)} mastersrankings cookie(s); "
+                f"dropped {dropped} from other domains (use --all-domains to keep them)")
+
+    from playwright.sync_api import sync_playwright
+    PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    kind, exe = browser_kind(args)
+    kwargs = dict(user_data_dir=str(PROFILE_DIR), headless=True,
+                  args=["--disable-blink-features=AutomationControlled"])
+    with sync_playwright() as p:
+        if kind == "chromium":
+            ctx = p.chromium.launch_persistent_context(**kwargs)
+        else:
+            kwargs["channel"] = kind
+            if exe:
+                kwargs["executable_path"] = exe
+            ctx = p.chromium.launch_persistent_context(**kwargs)
+        ctx.add_cookies(cookies)
+        ctx.close()  # persistent context flushes the cookie jar to profile/
+
+    names = sorted({c["name"] for c in cookies})
+    log(f"imported {len(cookies)} cookie(s) into profile/: {', '.join(names)}")
+    if any(n.lower().startswith("cf_clearance") for n in names):
+        log("cf_clearance present — that is the cookie that actually clears Cloudflare.")
+    else:
+        log("WARNING: no cf_clearance cookie in the export. That is the one that clears")
+        log("  Cloudflare — make sure the export includes HttpOnly cookies (most cookie")
+        log("  extensions have a toggle for this). Re-export from the cleared tab.")
+    log("Now verify it works from THIS machine:")
+    log("  python3 mrtool.py check")
+
+
 def cmd_sync_export(args) -> None:
     """Tar up the research data (store.db + registry [+ data/]) for transfer."""
     db = _db_path()
@@ -1032,6 +1188,12 @@ def main() -> None:
     sub.add_parser("check", parents=[common],
                    help="does the current profile pass Cloudflare from here? (headless)")
 
+    ci = sub.add_parser("cookie-import", parents=[common],
+                        help="inject cookies exported from a working browser into profile/")
+    ci.add_argument("file", help="cookie export: JSON array/object or cookies.txt")
+    ci.add_argument("--all-domains", action="store_true",
+                    help="keep cookies from all domains (default: only mastersrankings.com)")
+
     sx = sub.add_parser("sync-export", parents=[common],
                         help="tar up the research data (store.db + registry)")
     sx.add_argument("out", nargs="?", help="output file (default: mrtool-sync-<stamp>.tar.gz)")
@@ -1047,7 +1209,7 @@ def main() -> None:
      "list": cmd_list, "profile": cmd_profile, "store": cmd_store,
      "fetch": cmd_fetch, "rankings": cmd_rankings,
      "export-session": cmd_export_session, "import-session": cmd_import_session,
-     "check": cmd_check, "sync-export": cmd_sync_export,
+     "check": cmd_check, "cookie-import": cmd_cookie_import, "sync-export": cmd_sync_export,
      "sync-import": cmd_sync_import}[args.cmd](args)
 
 
