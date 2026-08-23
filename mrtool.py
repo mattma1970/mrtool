@@ -293,7 +293,12 @@ def cmd_auth(args) -> None:
 
 
 def _has_display() -> bool:
-    import os
+    """True if a GUI is available. Windows/macOS always have one; on Linux we
+    need X11/Wayland env vars (or Xvfb) — this is the guard for headless
+    servers, not for desktop machines."""
+    import sys, os
+    if sys.platform.startswith(("win", "darwin", "cygwin", "msys")):
+        return True
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
