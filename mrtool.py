@@ -129,17 +129,32 @@ def browser_kind(args):
         return "chromium", None
     if args.browser == "chrome":
         exe = shutil.which("google-chrome") or shutil.which("chromium") \
-            or shutil.which("chromium-browser")
+            or shutil.which("chromium-browser") or _win_executable("chrome")
         if not exe:
-            sys.exit("error: no google-chrome/chromium found on PATH; "
+            sys.exit("error: no google-chrome/chromium found; "
                      "use default (playwright chromium) or install Chrome")
         return "chrome", exe
     if args.browser == "msedge":
-        exe = shutil.which("msedge") or shutil.which("microsoft-edge")
+        exe = shutil.which("msedge") or shutil.which("microsoft-edge") \
+            or _win_executable("edge")
         if not exe:
-            sys.exit("error: no msedge on PATH")
-        return "edge", exe
+            sys.exit("error: no msedge found on this system")
+        return "msedge", exe
     sys.exit(f"error: unknown browser {args.browser}")
+
+
+def _win_executable(app: str):
+    """Locate a Windows Chrome/Edge install (not always on PATH)."""
+    rel = {"chrome": ("Google", "Chrome", "Application", "chrome.exe"),
+           "edge": ("Microsoft", "Edge", "Application", "msedge.exe")}[app]
+    for base in (os.environ.get("PROGRAMFILES"),
+                 os.environ.get("PROGRAMFILES(X86)"),
+                 os.environ.get("LOCALAPPDATA")):
+        if base:
+            p = Path(base).joinpath(*rel)
+            if p.exists():
+                return str(p)
+    return None
 
 
 def launch(p, args, headless: bool, wait_for_manual: bool = False):
