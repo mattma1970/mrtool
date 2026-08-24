@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# make-bundle.sh — run on the DEV BOX: build a fresh mrtool source bundle for
+# make-bundle.sh - run on the DEV BOX: build a fresh mrtool source bundle for
 # distribution to other machines over the tailnet (no git credentials needed
 # on the receiving side).
 #

@@ -7,7 +7,7 @@
 .DESCRIPTION
     Installs only what is missing, in this order:
       1. Tailscale (if absent) and joins the tailnet
-      2. WSL2 + a DEDICATED distro (default: Ubuntu-dsh) — distros that
+      2. WSL2 + a DEDICATED distro (default: Ubuntu-dsh) - distros that
          already exist are never touched
       3. Inside that distro: Node 22, DeepSeek Harness (npm), a Python
          venv with playwright, and mrtool extracted from a source bundle
@@ -107,7 +107,7 @@ Ok ("Windows: {0} (build {1})" -f $os.Caption.Trim(), $Build)
 switch ($true) {
     ($Build -ge 22621) { $ModeTier = "mirrored networking (default on this build)" }
     ($Build -ge 22000) { $ModeTier = "mirrored networking (opt-in for our distro)" }
-    ($IsWin10)         { $ModeTier = "NAT mode (Windows 10) — portproxy workaround will be applied if needed" }
+    ($IsWin10)         { $ModeTier = "NAT mode (Windows 10) - portproxy workaround will be applied if needed" }
     ($Build -eq 1903)  { Fail "Windows 10 20H1 (build 1903) does not support WSL2. Update Windows to 21H2+ and re-run, or accept WSL1 (degraded)." }
     default            { Fail "Windows build $Build is too old for WSL2 (need >= 19041)." }
 }
@@ -126,14 +126,14 @@ if (-not $ModelKey) {
         if ($ModelKey) { Ok "model key: read from deploy/credentials" }
     }
 }
-if (-not $ModelKey) { Warn "no model key supplied (deploy/credentials or -ModelKey) — you'll add it later in the distro" }
+if (-not $ModelKey) { Warn "no model key supplied (deploy/credentials or -ModelKey) - you'll add it later in the distro" }
 
 # Tailscale state
 $TsBin = Resolve-TsBin
 $TsUp = Test-TsConnected $TsBin
 if ($TsUp) { Skip "tailscale (running)" }
-elseif ($TsBin) { Warn "tailscale: installed, not connected — will run 'tailscale up'" }
-else { Warn "tailscale: not installed — will download and install" }
+elseif ($TsBin) { Warn "tailscale: installed, not connected - will run 'tailscale up'" }
+else { Warn "tailscale: not installed - will download and install" }
 
 # WSL state
 $WslCmd = Get-Command wsl -ErrorAction SilentlyContinue
@@ -141,9 +141,9 @@ $Distros = @()
 if ($WslCmd) {
     $lst = & wsl -l -q 2>&1
     if ($LASTEXITCODE -eq 0) { $Distros = @($lst | Where-Object { $_ -match '^\S' }) }
-    else { Warn "wsl is present but 'wsl -l' failed — assuming a broken/uninitialized install" }
+    else { Warn "wsl is present but 'wsl -l' failed - assuming a broken/uninitialized install" }
 }
-if (-not $WslCmd) { Warn "wsl: command not found — will install (admin)" }
+if (-not $WslCmd) { Warn "wsl: command not found - will install (admin)" }
 else {
     Ok ("wsl distros present: {0}" -f $(if ($Distros.Count) { $Distros -join ", " } else { "(none)" }))
 }
@@ -161,7 +161,7 @@ if ($BundlePath) {
     if (-not (Test-Path $RepoPath)) { Fail "repo not found: $RepoPath" }
     Ok "bundle: will be built from $RepoPath via git archive"
 } else {
-    Warn "no bundle source yet (-RepoPath or -BundlePath) — required at install time"
+    Warn "no bundle source yet (-RepoPath or -BundlePath) - required at install time"
 }
 
 Say "plan"
@@ -169,7 +169,7 @@ Ok "  1. tailscale ......... " + $(if ($TsUp) { "skip (running)" } elseif ($TsBi
 Ok "  2. wsl2 distro ....... " + $(if ($HasDistro) { "reuse '$Distro'" } else { "create '$Distro' ($ModeTier)" })
 Ok "  3. in-distro stack ... node22 + dsh + venv(playwright) + mrtool  [idempotent]"
 Ok "  4. dsh model ......... $ProviderId -> $ModelBase"
-if ($DryRun) { Say "dry-run complete — nothing was changed."; exit 0 }
+if ($DryRun) { Say "dry-run complete - nothing was changed."; exit 0 }
 
 # ---------------------------------------------------------------- tailscale --
 if (-not $TsUp) {
@@ -189,7 +189,7 @@ if (-not $TsUp) {
         $TsBin = Resolve-TsBin
         if (-not $TsBin) { Fail "Tailscale installed but tailscale.exe not found at the standard paths." }
         if (-not $AuthKey) {
-            Warn "no -AuthKey supplied: run 'tailscale up' in a terminal (or give the box an auth key), then re-run (idempotent). Continuing — the model endpoint probe may warn."
+            Warn "no -AuthKey supplied: run 'tailscale up' in a terminal (or give the box an auth key), then re-run (idempotent). Continuing - the model endpoint probe may warn."
         }
     } else {
         if ($AuthKey) {
@@ -201,7 +201,7 @@ if (-not $TsUp) {
     if ($AuthKey) {
         $ok = $false
         for ($i = 0; $i -lt 30; $i++) { Start-Sleep -Seconds 2; if (Test-TsConnected $TsBin) { $ok = $true; break } }
-        if (-not $ok) { Fail "tailscale is not connected yet — re-run this script (idempotent), or check the key." }
+        if (-not $ok) { Fail "tailscale is not connected yet - re-run this script (idempotent), or check the key." }
         Skip "tailscale (running)"
     }
 }
@@ -209,7 +209,7 @@ if (-not $TsUp) {
 # ---------------------------------------------------------------- wsl2 -------
 if (-not $WslCmd) {
     if ($IsWin11) {
-        Fail "the 'wsl' command is missing. Install the 'Windows Subsystem for Linux' app from the Microsoft Store (it normally ships with Windows 11 — it may have been uninstalled), then re-run (idempotent)."
+        Fail "the 'wsl' command is missing. Install the 'Windows Subsystem for Linux' app from the Microsoft Store (it normally ships with Windows 11 - it may have been uninstalled), then re-run (idempotent)."
     }
     if (-not $IsAdmin) { Fail "enabling WSL on Windows 10 needs an admin PowerShell. Re-run as Administrator." }
     Step "enable WSL prerequisite features (Windows 10)" {
@@ -226,7 +226,7 @@ if (-not $WslCmd) {
         }
         if ($pend) { Fail "feature(s) $pend are pending a reboot. Reboot, then re-run (idempotent)." }
         $WslCmd = Get-Command wsl -ErrorAction SilentlyContinue
-        if (-not $WslCmd) { Fail "'wsl' still not on PATH after enabling the features — reboot, then re-run (idempotent)." }
+        if (-not $WslCmd) { Fail "'wsl' still not on PATH after enabling the features - reboot, then re-run (idempotent)." }
         Ok "WSL base features present"
     }
 }
@@ -257,7 +257,7 @@ if (-not $HasDistro) {
         $now = & wsl -l -q 2>&1
         if ($LASTEXITCODE -eq 0 -and ($now | Select-String -SimpleMatch $Distro -Quiet)) { $seen = $true; break }
     }
-    if (-not $seen) { Fail "distro did not appear yet — a reboot is probably required. Reboot, then re-run (idempotent)." }
+    if (-not $seen) { Fail "distro did not appear yet - a reboot is probably required. Reboot, then re-run (idempotent)." }
     $vline = (& wsl -l -v 2>&1) | Select-String -SimpleMatch $Distro
     if ($vline -and ($vline.Line -notmatch '\b2\s*$')) {
         Fail "distro is not running on WSL2. Run 'wsl --update' in an admin PowerShell (installs the WSL2 kernel), then re-run (idempotent)."
@@ -282,7 +282,7 @@ if (-not $CreatedDistro) {
 
 # ------------------------------------------------------------- networking ---
 if ($CreatedDistro -and $IsWin11) {
-    Step "set mirrored networking on '$Distro' (ours only — never rewrites other distros)" {
+    Step "set mirrored networking on '$Distro' (ours only - never rewrites other distros)" {
         & wsl --set-config $Distro networkingMode=mirrored *> $null
         if ($LASTEXITCODE -ne 0) {
             Warn "could not set mirrored mode (older wsl.exe). The empirical probe below decides the CDP mode; on 22H2 you can opt in later with 'wsl --set-config $Distro networkingMode=mirrored'."
@@ -293,7 +293,7 @@ if ($CreatedDistro -and $IsWin11) {
 }
 
 # Empirical probe: can the distro see Windows loopback? (mirrored: yes;
-# NAT: no — the Windows host's 127.0.0.1 is not reachable from inside.)
+# NAT: no - the Windows host's 127.0.0.1 is not reachable from inside.)
 $Shared = $null
 $listener = $null
 try {

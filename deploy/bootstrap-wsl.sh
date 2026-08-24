@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bootstrap-wsl.sh — in-distro setup for the mrtool + DSH install.
+# bootstrap-wsl.sh - in-distro setup for the mrtool + DSH install.
 #
 # Run inside the target WSL2 distro (install.ps1 does this for you; manual
 # invocation is also fine). Idempotent: every step is check-first, and
@@ -104,7 +104,7 @@ fi
 say "mrtool (from bundle)"
 # Timestamped bundles: pick the NEWEST one (lexicographic = chronological).
 BUNDLE=$(ls -1 "$BASE"/bundle/mrtool-bundle-*.tar.gz 2>/dev/null | sort | tail -1 || true)
-[ -n "$BUNDLE" ] || fail "no bundle in $BASE/bundle — install.ps1 copies one in (or pass -BundlePath)"
+[ -n "$BUNDLE" ] || fail "no bundle in $BASE/bundle - install.ps1 copies one in (or pass -BundlePath)"
 if [ -d "$BASE/mrtool" ] && [ "$FORCE" != "1" ]; then
   skip "mrtool at $BASE/mrtool (use -Force to refresh; old bundle kept for you)"
 else
@@ -124,7 +124,7 @@ say "dsh model provider config (~/.dsh/settings.yaml)"
 SETTINGS="$HOME/.dsh/settings.yaml"
 mkdir -p "$HOME/.dsh"
 if [ -f "$SETTINGS" ] && [ "$FORCE" != "1" ]; then
-  skip "settings.yaml exists — NOT touched (edit by hand, or re-run with -Force to overwrite from backup)"
+  skip "settings.yaml exists - NOT touched (edit by hand, or re-run with -Force to overwrite from backup)"
 else
   [ -f "$SETTINGS" ] && cp "$SETTINGS" "$SETTINGS.prev.$(date +%s)" && say "previous settings.yaml backed up"
   cat > "$SETTINGS" <<EOF
@@ -168,7 +168,7 @@ if [ -n "$KEY" ]; then
 elif [ -f "$BASE/credentials.env" ]; then
   skip "credentials.env exists (kept)"
 else
-  say "NOTE: no key supplied and none stored — put DSH_MODEL_API_KEY=... in $BASE/credentials.env (0600)"
+  say "NOTE: no key supplied and none stored - put DSH_MODEL_API_KEY=... in $BASE/credentials.env (0600)"
 fi
 
 # ------------------------------------------------------- cdp host env -------
@@ -233,7 +233,7 @@ if [ -f "$BASE/credentials.env" ]; then
   if [ "$code" = "200" ]; then
     ok "model endpoint reachable: $MODEL_BASE (HTTP 200)"
   else
-    say "WARNING: model endpoint returned HTTP $code from this distro — is the tailnet up? (body: $(head -c 120 /tmp/dsh_model_probe 2>/dev/null))"
+    say "WARNING: model endpoint returned HTTP $code from this distro - is the tailnet up? (body: $(head -c 120 /tmp/dsh_model_probe 2>/dev/null))"
   fi
 else
   say "skipping endpoint probe (no key configured)"
