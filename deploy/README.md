@@ -65,6 +65,16 @@ workaround only when needed.
   installed. `-Force` refreshes *managed* files (mrtool, DSH settings,
   credentials) and backs them up first (`.prev.<stamp>`).
 - `-DryRun` prints the full plan and checks, changing nothing.
+- **An interrupted first run heals itself.** If a previous run created the
+  distro but died partway, the installer recognizes its own fresh distro
+  (marker file `/etc/dsh-managed-by-mrtool`; a distro whose default user is
+  still `root` is by definition unpersonalized), creates the missing user,
+  moves the distro to mirrored networking where the build supports it, and
+  removes any NAT leftovers (portproxy, firewall rule) once mirrored takes
+  effect.
+- `-RepoPath` must be a real git checkout (the installer verifies this up
+  front). A GitHub "Download ZIP" copy has no `.git` and is refused with
+  guidance - use `-BundlePath` in that case.
 
 ### Why WSL2 (and not Docker)
 

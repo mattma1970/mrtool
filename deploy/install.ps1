@@ -183,7 +183,15 @@ if ($BundlePath) {
     Ok "bundle: $Bundle"
 } elseif ($RepoPath) {
     if (-not (Test-Path $RepoPath)) { Fail "repo not found: $RepoPath" }
-    Ok "bundle: will be built from $RepoPath via git archive"
+    $rp = (Resolve-Path $RepoPath).Path
+    $grOut = & git -C $rp rev-parse --is-inside-work-tree 2>&1
+    $gr = ""
+    if ($LASTEXITCODE -eq 0 -and $grOut) { $gr = @($grOut)[-1].ToString().Trim() }
+    if ($gr -ne "true") {
+        Fail "$RepoPath is not a git checkout (no .git there). 'git archive' needs a real clone - re-clone the repo, or pass -BundlePath <bundle.tar.gz> instead (build one on the dev box with deploy/make-bundle.sh)."
+    }
+    $RepoPath = $rp
+    Ok "bundle: will be built from $rp via git archive"
 } else {
     Warn "no bundle source yet (-RepoPath or -BundlePath) - required at install time"
 }
@@ -310,7 +318,7 @@ if (-not $HasDistro) {
 
     Step "create local user '$DshUser' + set as default (first boot as root)" {
         $tmpPass = [guid]::NewGuid().ToString("N")
-        $bs = "id $DshUser >/dev/null 2>&1 || useradd -m -s /bin/bash $DshUser; echo '${DshUser}:${tmpPass}' | chpasswd; echo '$DshUser ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/$DshUser; chmod 440 /etc/sudoers.d/$DshUser; printf '[user]\ndefault=$DshUser\n' > /etc/wsl.conf"
+        $bs = "id $DshUser >/dev/null 2>&1 || useradd -m -s /bin/bash $DshUser; echo '${DshUser}:${tmpPass}' | chpasswd; echo '$DshUser ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/$DshUser; chmod 440 /etc/sudoers.d/$DshUser; printf '[user]\ndefault=$DshUser\n' > /etc/wsl.conf; echo 'created by mrtool deploy installer' > /etc/dsh-managed-by-mrtool"
         & wsl -d $Distro -u root -- /bin/bash -c $bs
         if ($LASTEXITCODE -ne 0) { Fail "could not create $DshUser inside $Distro" }
         Ok "user $DshUser created and set as default"
@@ -320,21 +328,48 @@ $TargetUser = $DshUser
 if (-not $CreatedDistro) {
     # last stdout line is the username (wsl may prepend notice lines)
     $ruOut = & wsl -d $Distro -- whoami 2>&1
-    $ru = ""
-    if ($LASTEXITCODE -eq 0 -and $ruOut) { $ru = @($ruOut)[-1].ToString().Trim() }
-    if ($ru) { $TargetUser = $ru }
-    Ok "reusing distro default user: $TargetUser"
+    $defaultUser = ""
+    if ($LASTEXITCODE -eq 0 -and $ruOut) { $defaultUser = @($ruOut)[-1].ToString().Trim() }
+    if (-not $defaultUser) {
+        Fail "could not determine the default user of '$Distro' (whoami failed). Check 'wsl -l -v'; try 'wsl --repair $Distro' and re-run."
+    }
+    $idOut = & wsl -d $Distro -u root -- /bin/bash -c "id $DshUser >/dev/null 2>&1 && echo present" 2>&1
+    $hasUser = ($LASTEXITCODE -eq 0 -and $idOut -match "present")
+    if ($hasUser) {
+        Ok "user $DshUser already present in $Distro (default user: $defaultUser)"
+    } elseif ($defaultUser -eq "root") {
+        # A distro whose default user is still root is a fresh, unpersonalized
+        # one - typically left behind by an earlier, interrupted run of this
+        # installer. Creating our user there touches nothing pre-existing.
+        Step "create local user '$DshUser' + set as default (recovered fresh distro)" {
+            $tmpPass = [guid]::NewGuid().ToString("N")
+            $bs = "id $DshUser >/dev/null 2>&1 || useradd -m -s /bin/bash $DshUser; echo '${DshUser}:${tmpPass}' | chpasswd; echo '$DshUser ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/$DshUser; chmod 440 /etc/sudoers.d/$DshUser; printf '[user]\ndefault=$DshUser\n' > /etc/wsl.conf; echo 'created by mrtool deploy installer' > /etc/dsh-managed-by-mrtool"
+            & wsl -d $Distro -u root -- /bin/bash -c $bs
+            if ($LASTEXITCODE -ne 0) { Fail "could not create $DshUser inside $Distro" }
+            & wsl --terminate $Distro *> $null
+            Ok "user $DshUser created and set as default"
+        }
+    } else {
+        Fail "distro '$Distro' has no user '$DshUser' and its default user is '$defaultUser' - refusing to modify a pre-existing distro. Use '-DshUser $defaultUser' to target the existing user, or re-run without -Distro to use the default fresh distro."
+    }
 }
 
 # ------------------------------------------------------------- networking ---
-if ($CreatedDistro -and $IsWin11) {
+# 'ours' = created by this installer (this run or an earlier one; the marker
+# file is written at user creation). Never reconfigures unmanaged distros.
+$Managed = $CreatedDistro
+if (-not $Managed) {
+    $mkOut = & wsl -d $Distro -u root -- /bin/bash -c "test -f /etc/dsh-managed-by-mrtool && echo managed" 2>&1
+    if ($LASTEXITCODE -eq 0 -and $mkOut -match "managed") { $Managed = $true }
+}
+if ($Managed -and $IsWin11) {
     Step "set mirrored networking on '$Distro' (ours only - never rewrites other distros)" {
+        & wsl --terminate $Distro *> $null
         & wsl --set-config $Distro networkingMode=mirrored *> $null
         if ($LASTEXITCODE -ne 0) {
-            Warn "could not set mirrored mode (older wsl.exe). The empirical probe below decides the CDP mode; on 22H2 you can opt in later with 'wsl --set-config $Distro networkingMode=mirrored'."
+            Warn "could not set mirrored mode (older wsl.exe). The probe below decides the CDP mode; on a newer engine you can opt in later with 'wsl --set-config $Distro networkingMode=mirrored'."
         }
-        & wsl --terminate $Distro *> $null
-        Ok "networking configured (distro restarted)"
+        Ok "networking configured for '$Distro' (takes effect on next start)"
     }
 }
 
@@ -345,10 +380,12 @@ $listener = $null
 try {
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 18889)
     $listener.Start()
-    $codeOut = & wsl -d $Distro -- bash -c "curl -s --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:18889" 2>$null
+    # plain TCP connect: the listener sends no HTTP reply, so curl's
+    # http_code is 000 in BOTH modes and cannot tell them apart
+    $codeOut = & wsl -d $Distro -- bash -c "(exec 3<>/dev/tcp/127.0.0.1/18889) 2>/dev/null && echo 1 || echo 0" 2>$null
     $code = ""
     if ($codeOut) { $code = @($codeOut)[-1].ToString().Trim() }
-    $Shared = ($code -ne "" -and $code -ne "000")
+    $Shared = ($code -eq "1")
 } catch { $Shared = $null }
 finally { if ($listener) { try { $listener.Stop() } catch {} } }
 
@@ -356,6 +393,27 @@ $CdpMode = "unknown"
 if ($Shared -eq $true) { $CdpMode = "mirrored" }
 elseif ($Shared -eq $false) { $CdpMode = "nat" }
 Ok "localhost shared with ${Distro}: $Shared  ->  CDP mode: $CdpMode"
+
+if ($CdpMode -eq "mirrored") {
+    # a previous NAT-mode run may have left portproxy + firewall artifacts;
+    # in mirrored mode the distro reaches 127.0.0.1 directly, and they are an
+    # unnecessary open inbound port - remove ours (recognized by shape).
+    if ($IsAdmin) {
+        $ppOut = & netsh interface portproxy show v4tov4 2>&1
+        foreach ($line in @($ppOut)) {
+            $t = $line.ToString().Trim()
+            if ($t -match '^(0\.0\.0\.0|\d{1,3}(?:\.\d{1,3}){3}):9222\b' -and $t -match '127\.0\.0\.1:9222\b') {
+                $la = ($t -split ':')[0]
+                & netsh interface portproxy delete v4tov4 listenaddress=$la listenport=9222 *> $null
+                Ok ("removed leftover NAT portproxy {0}:9222 (mirrored mode)" -f $la)
+            }
+        }
+        if (Get-NetFirewallRule -DisplayName "mrtool CDP (WSL)" -ErrorAction SilentlyContinue) {
+            Remove-NetFirewallRule -DisplayName "mrtool CDP (WSL)" | Out-Null
+            Ok "removed leftover NAT firewall rule 'mrtool CDP (WSL)' (mirrored mode)"
+        }
+    }
+}
 
 if ($CdpMode -eq "nat") {
     if (-not $IsAdmin) {
@@ -377,7 +435,7 @@ if ($CdpMode -eq "nat") {
                     Warn "specific-address portproxy failed; using 0.0.0.0 (firewall rule scopes it to the WSL adapter)"
                     & netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=9222 connectaddress=127.0.0.1 connectport=9222
                 }
-                Ok "portproxy: <wsl-nat-subnet>:9222 -> 127.0.0.1:9222"
+                Ok ("portproxy: {0}:9222 -> 127.0.0.1:9222" -f $hostIp)
             } else { Skip "portproxy for 9222" }
             $alias = (Get-NetIPConfiguration | Where-Object { $_.IPv4Address.IPAddress -eq $hostIp } | Select-Object -First 1).InterfaceAlias
             if (-not $alias) { Fail "could not find the interface alias for $hostIp" }
@@ -415,7 +473,8 @@ $wslRoot = "\\wsl.localhost\$Distro"
 if (-not (Test-Path $wslRoot)) { $wslRoot = "\\wsl$\$Distro" }
 
 Step "copy bundle + bootstrap script into $Distro (via $wslRoot)" {
-    $dst = "$wslRoot\root\$WorkDir\bundle"
+    # must match the bootstrap's $BASE/bundle (= /home/<user>/<workdir>/bundle)
+    $dst = "$wslRoot\home\$TargetUser\$WorkDir\bundle"
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
     Copy-Item $Bundle -Destination (Join-Path $dst ("mrtool-bundle-{0}.tar.gz" -f $stamp))
     Copy-Item (Join-Path $PSScriptRoot "bootstrap-wsl.sh") "$wslRoot\root\bootstrap-wsl.sh"
