@@ -54,13 +54,28 @@ PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" ./.venv/bin/python -m playwright insta
 ```bash
 ./.venv/bin/python mrtool.py auth                  # ONE-TIME: visible browser,
                                                    #   pass Cloudflare, log in, verify
-./.venv/bin/python mrtool.py search "Jane Smith"   # find + register (pick # if ambiguous)
+./.venv/bin/python mrtool.py search "Jane Smith"   # find, register, AND capture the
+                                                    #   chosen athlete's profile page
+./.venv/bin/python mrtool.py search "Jane Smith" --store   # ...and upsert parsed rows
 ./.venv/bin/python mrtool.py list                  # registry + capture freshness
 ./.venv/bin/python mrtool.py refresh               # re-capture all, headless, unattended
 ```
 
-After `auth`, everything runs unattended; a saved profile is reused. If
-Cloudflare ever expires the session (typically after weeks), re-run `auth`.
+`search` navigates to the selected profile before capturing, so
+`data/<athlete>/<stamp>/profile.html` + `tables.json` hold the athlete's real
+data (not the search page). Add `--store` to also parse it into `store.db`
+(same safe-default behaviour as `refresh --store`: evidence `parsed.json` is
+always written; `needs_review` flags rows the parser wasn't sure about).
+
+In **CDP mode** (see below), prefix any of these with `--cdp`:
+
+```bash
+./.venv/bin/python mrtool.py --cdp search "Jane Smith" --store
+```
+
+After `auth` (or a CDP attach), everything runs unattended; a saved profile is
+reused. If Cloudflare ever expires the session (typically after weeks),
+re-run `auth` / re-open the CDP launcher.
 
 ## Broad / research use (the "crawler" surface)
 

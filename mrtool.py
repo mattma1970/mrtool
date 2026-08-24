@@ -19,8 +19,9 @@ Requires: playwright  (python3 -m venv .venv && .venv/bin/pip install playwright
 
 Usage:
   python3 mrtool.py auth                     # one-time: open browser, pass Cloudflare
-  python3 mrtool.py search "Jane Smith"      # find + register an athlete
+  python3 mrtool.py search "Jane Smith"      # find + register + capture the profile
   python3 mrtool.py search "Jane Smith" --pick 2
+  python3 mrtool.py search "Jane Smith" --store  # also upsert parsed rows into the store
   python3 mrtool.py refresh [NAME|ALL]       # re-capture registered athletes
   python3 mrtool.py list [--json]            # registry + capture status
   python3 mrtool.py profile <url>            # capture a profile by direct URL
@@ -524,8 +525,18 @@ def cmd_search(args) -> None:
                 ctx.close()
                 return
 
-        save_capture(slug, args.name, choice["href"], page, candidates=cands,
-                     note="registered via search")
+        # Navigate to the CHOSEN profile and capture *that* page (the search
+        # results page is NOT the athlete's data — this mirrors _capture_one).
+        page.goto(choice["href"], wait_until="domcontentloaded")
+        time.sleep(4)
+        if is_challenge(page.title(), page.content()[:8000]):
+            log("  challenge page appeared on profile load (session may have expired).")
+            log("  Re-run with --cdp and try again.")
+            ctx.close()
+            sys.exit(2)
+
+        out = save_capture(slug, args.name, choice["href"], page, candidates=cands,
+                           note="registered via search")
         meta = {"name": args.name, "url": choice["href"],
                 "x8": _extract_x8(choice["href"]),
                 "selected_row": re.sub(r"\s+", " ", (choice["row"] or choice["text"]))[:200],
@@ -535,6 +546,10 @@ def cmd_search(args) -> None:
         reg["athletes"].append(meta)
         save_registry(reg)
         log(f"Registered {args.name} -> {choice['href']}")
+        if getattr(args, "store", False) and meta.get("x8"):
+            summary = _store_capture(out, meta["x8"], store=True)
+            log(f"   stored={summary.get('stored', 0)} "
+                f"needs_review={summary.get('needs_review')}")
         log("Future runs:  python3 mrtool.py refresh " + repr(args.name))
         ctx.close()
 
@@ -1245,6 +1260,8 @@ def build_parser():
     sp.add_argument("name")
     sp.add_argument("--pick", type=int, help="candidate number (1-based) for non-interactive runs")
     sp.add_argument("--force", action="store_true", help="re-run search even if already registered")
+    sp.add_argument("--store", action="store_true",
+                    help="upsert parsed rows into store.db (default: evidence only)")
 
     rp = sub.add_parser("refresh", parents=[common],
                         help="re-capture profile(s) for registered athletes")
