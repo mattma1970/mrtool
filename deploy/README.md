@@ -66,6 +66,32 @@ workaround only when needed.
   credentials) and backs them up first (`.prev.<stamp>`).
 - `-DryRun` prints the full plan and checks, changing nothing.
 
+### Why WSL2 (and not Docker)
+
+The deciding constraint is `launch_cdp.bat`: it launches Chrome with
+`--remote-debugging-port=9222` and **no** `--remote-debugging-address`, so
+the debug port binds to **127.0.0.1 only**. That is deliberate - the agent
+can drive the browser, but nothing else on the network can.
+
+- **WSL2 mirrored networking** (Windows 11 23H2+): `127.0.0.1` is shared
+  with the host, so the agent reaches Chrome directly and the loopback-only
+  property is preserved. On NAT machines the installer adds a scoped
+  portproxy - a workaround, but one that keeps the port loopback-scoped.
+- **Docker**: a container reaches the host via `host.docker.internal`,
+  which resolves to a *non-loopback* host address. A 127.0.0.1-bound
+  listener refuses that. Making it work means either adding
+  `--remote-debugging-address=0.0.0.0` (exposes the CF-passing browser's
+  debug port to the whole LAN - unacceptable) or a host-side proxy, i.e.
+  the same portproxy plumbing as the NAT case, for a worse default.
+
+Secondary: on a household PC, WSL2 is a free OS feature already present on
+these machines; Docker Desktop is a full app plus its own managed VM.
+
+Docker *would* be the better call if we wanted image-based distribution
+(`docker pull` updates, bit-identical environments) or the same agent image
+across Linux/Mac/Windows. Neither applies to a Windows-only box driving a
+loopback Chrome.
+
 ## Setup flows
 
 ### Your own machine (already has WSL2 + Tailscale)
