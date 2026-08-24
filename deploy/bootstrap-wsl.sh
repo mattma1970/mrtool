@@ -124,6 +124,9 @@ else
   tar -xzf "$BUNDLE" -C "$BASE"
   ok "mrtool extracted from $(basename "$BUNDLE")"
 fi
+# Windows-side 'git archive' materializes CRLF (core.autocrlf); shell scripts
+# must be LF to run. No-op on files that are already clean.
+find "$BASE/mrtool" -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
 "$BASE/venv/bin/python" "$BASE/mrtool/mrtool.py" --help >/dev/null 2>&1 \
   || fail "mrtool.py --help failed after extraction"
 

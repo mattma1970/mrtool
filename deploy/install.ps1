@@ -526,7 +526,9 @@ Step "copy bundle into $Distro; bootstrap script comes from the bundle" {
     # tree: git archive contains the committed bytes (always LF), while a
     # Windows checkout with core.autocrlf=true rewrites .sh files to CRLF,
     # which makes bash choke (set: pipefail^M) and corrupts every variable.
-    $ex = & wsl -d $Distro -u root -- /bin/bash -c "rm -rf /tmp/mrtool-x && mkdir -p /tmp/mrtool-x && tar -xzf '$bpath' -C /tmp/mrtool-x 'mrtool/deploy/bootstrap-wsl.sh' && cp -f /tmp/mrtool-x/mrtool/deploy/bootstrap-wsl.sh /root/bootstrap-wsl.sh && chmod 755 /root/bootstrap-wsl.sh && wc -c < /root/bootstrap-wsl.sh" 2>&1
+    # sed strips CRLF if the Windows-side git archive applied autocrlf; no-op
+    # on clean files. LF is enforced here, not trusted upstream.
+    $ex = & wsl -d $Distro -u root -- /bin/bash -c "rm -rf /tmp/mrtool-x && mkdir -p /tmp/mrtool-x && tar -xzf '$bpath' -C /tmp/mrtool-x 'mrtool/deploy/bootstrap-wsl.sh' && sed -i 's/\r$//' /tmp/mrtool-x/mrtool/deploy/bootstrap-wsl.sh && cp -f /tmp/mrtool-x/mrtool/deploy/bootstrap-wsl.sh /root/bootstrap-wsl.sh && chmod 755 /root/bootstrap-wsl.sh && wc -c < /root/bootstrap-wsl.sh" 2>&1
     if ($LASTEXITCODE -ne 0) { Fail "could not extract bootstrap-wsl.sh from the bundle (wsl exited $LASTEXITCODE)" }
     $n2 = ""
     foreach ($l in @($ex)) { $t = Get-CleanLine $l; if ($t -match '^\d+$') { $n2 = $t } }
