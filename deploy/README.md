@@ -22,6 +22,13 @@ if ever needed.
 
 ## What the installer does (check-first, in order)
 
+0. **Preflight** — reports the Windows build, and the total/free space on
+   the drive that will hold the new distro's image (the drive of
+   `%LOCALAPPDATA%`), including how big your existing WSL images already
+   are. A fresh distro needs ~8 GB free (2 GB base image + Node 22 + DSH +
+   Python venv + headroom); the installer stops with a clear message if
+   there isn't room (`-RequiredFreeGB` to override). Reusing an existing
+   distro never adds a new image, so the check is informational there.
 1. **Tailscale** — install + join the tailnet (skip if already running).
 2. **WSL2 + a dedicated distro** (`Ubuntu-dsh` by default) — never touches
    distros that already exist; on Windows 10 enables the required Windows

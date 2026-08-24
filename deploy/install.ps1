@@ -60,7 +60,8 @@ param(
     [string]$ModelKey = "",
     [string]$ModelId = "unsloth/Qwen3.8-27B-GGUF",
     [string]$ProviderId = "devbox-01",
-    [string]$DshUser = "dsh"
+    [string]$DshUser = "dsh",
+    [int]$RequiredFreeGB = 8
 )
 
 $ErrorActionPreference = "Stop"
@@ -150,6 +151,28 @@ else {
 $HasDistro = @($Distros) -contains $Distro
 if ($HasDistro) { Skip "distro '$Distro' (will be reused; only our own files are added inside it)" }
 else { Warn ("distro '{0}': will be created fresh" -f $Distro) }
+
+# Disk space. WSL distro images land under the drive that holds
+# %LOCALAPPDATA% (the Store-package default), so that's the drive that matters.
+$driveRoot = [System.IO.Path]::GetPathRoot($env:LOCALAPPDATA)
+$disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$driveRoot'" -ErrorAction SilentlyContinue
+if ($disk) {
+    $totalGB = [math]::Round($disk.Size / 1GB, 1)
+    $freeGB  = [math]::Round($disk.FreeSpace / 1GB, 1)
+    $driveLabel = $driveRoot.TrimEnd(':')
+    Ok ("disk {0}: {1} GB total, {2} GB free" -f $driveLabel, $totalGB, $freeGB)
+    if (-not $HasDistro -and $freeGB -lt $RequiredFreeGB) {
+        Fail ("only {0} GB free on drive {1}, but a fresh distro needs about {2} GB (2 GB base image + node/dsh/venv stack + headroom). Free up space, or lower -RequiredFreeGB if you know what you're doing." -f $freeGB, $driveLabel, $RequiredFreeGB)
+    }
+    try {
+        $vhdxSum = (Get-ChildItem "$env:LOCALAPPDATA\Packages" -Recurse -Filter *.vhdx -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+        if ($vhdxSum) {
+            Ok ("existing WSL images on drive {0}: ~{1} GB (a fresh one adds ~{2} GB on top of that)" -f $driveLabel, [math]::Round($vhdxSum / 1GB, 1), $RequiredFreeGB)
+        }
+    } catch { Warn "could not enumerate existing WSL images (non-fatal)" }
+} else {
+    Warn "could not read free space for drive ${driveRoot} - continuing; the WSL install will fail clearly if the disk is full"
+}
 
 # Bundle source
 $Bundle = ""
