@@ -52,6 +52,10 @@ mkdir -p "$BASE/bundle"
 say "system packages"
 need=()
 command -v python3 >/dev/null || need+=(python3 python3-venv python3-pip)
+# python3 can be present but still unable to create venvs: ensurepip ships
+# in the python3-venv package on Ubuntu. Check for the ability, not the binary.
+python3 -m ensurepip --version >/dev/null 2>&1 || need+=(python3-venv)
+python3 -m pip --version >/dev/null 2>&1 || need+=(python3-pip)
 command -v git     >/dev/null || need+=(git)
 command -v curl    >/dev/null || need+=(curl ca-certificates)
 if [ ${#need[@]} -gt 0 ]; then
@@ -97,10 +101,15 @@ fi
 
 # ----------------------------------------------------------------- venv -----
 say "python venv ($BASE/venv) with playwright"
-if [ -x "$BASE/venv/bin/python" ]; then
+# Test for pip, not python: a venv that failed creation (missing ensurepip)
+# leaves venv/bin/python behind, which would fool a weaker check.
+if [ -x "$BASE/venv/bin/pip" ]; then
   skip "venv"
   [ "$FORCE" = "1" ] && "$BASE/venv/bin/pip" install -q playwright >/dev/null && ok "playwright refreshed"
 else
+  if [ -e "$BASE/venv" ] && [ ! -x "$BASE/venv/bin/pip" ]; then
+    rm -rf "$BASE/venv"   # broken venv left by an earlier failed run
+  fi
   python3 -m venv "$BASE/venv"
   "$BASE/venv/bin/pip" install -q --upgrade pip >/dev/null
   # CDP mode attaches to the Windows Chrome; no browser binaries needed here.
