@@ -551,7 +551,9 @@ if ($ModelKey) {
 Step "run bootstrap inside $Distro (node, dsh, venv, mrtool, dsh config)" {
     & wsl -d $Distro -u root -- /bin/bash -c "HOME=/home/$TargetUser bash /root/bootstrap-wsl.sh $WorkDir $ModelBase $ModelId $ProviderId $FORCEINT $CdpMode"
     if ($LASTEXITCODE -ne 0) { Fail "bootstrap failed (see output above)" }
-    $chown = "g=`$(id -gu $TargetUser 2>/dev/null || echo $TargetUser); chown -R ${TargetUser}:`$g /home/$TargetUser/$WorkDir /home/$TargetUser/.dsh; chown $TargetUser /home/$TargetUser/.bashrc"
+    # .cache too: the bootstrap runs pip as root, which creates root-owned
+    # ~/.cache/pip and makes later user-mode pip warn about ownership.
+    $chown = "g=`$(id -gu $TargetUser 2>/dev/null || echo $TargetUser); chown -R ${TargetUser}:`$g /home/$TargetUser/$WorkDir /home/$TargetUser/.dsh; [ -d /home/$TargetUser/.cache ] && chown -R ${TargetUser}:`$g /home/$TargetUser/.cache; chown $TargetUser /home/$TargetUser/.bashrc"
     & wsl -d $Distro -u root -- /bin/bash -c $chown
     Ok "bootstrap complete; ownership set to $TargetUser"
 }
