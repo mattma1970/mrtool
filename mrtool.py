@@ -201,7 +201,10 @@ def launch(p, args, headless: bool, wait_for_manual: bool = False):
     cdp = getattr(args, "cdp", False)
     if cdp:
         port = getattr(args, "cdp_port", 9222)
-        host = getattr(args, "cdp_host", "127.0.0.1")
+        # Precedence: --cdp-host flag > CDP_HOST env > 127.0.0.1.
+        # The env path is what the WSL deploy's env.sh hook uses, so an agent
+        # can just run --cdp without knowing which network mode it's in.
+        host = getattr(args, "cdp_host", None) or os.environ.get("CDP_HOST") or "127.0.0.1"
         endpoint = f"http://{host}:{port}"
         try:
             browser = p.chromium.connect_over_cdp(endpoint)
@@ -1255,7 +1258,7 @@ def build_parser():
                     help=argparse.SUPPRESS)
     ap.add_argument("--cdp-port", type=int, default=9222,
                     help=argparse.SUPPRESS)
-    ap.add_argument("--cdp-host", default="127.0.0.1",
+    ap.add_argument("--cdp-host", default=None,
                     help=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest="cmd", required=True)
 

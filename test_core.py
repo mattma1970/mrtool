@@ -162,9 +162,10 @@ def test_cdp_flag():
     # --cdp-port alone (no --cdp) is harmless; cdp stays False
     a = ap.parse_args(["--cdp-port", "9555", "check"])
     assert a.cdp is False, a.cdp
-    # --cdp-host: default 127.0.0.1, explicit value, both positions
+    # --cdp-host: parser default is None (falls back to CDP_HOST env, then
+    # 127.0.0.1, at launch time); explicit value in both positions
     a = ap.parse_args(["--cdp", "check"])
-    assert a.cdp_host == "127.0.0.1", a.cdp_host
+    assert a.cdp_host is None, a.cdp_host
     a = ap.parse_args(["--cdp", "--cdp-host", "172.20.100.1", "check"])
     assert a.cdp_host == "172.20.100.1", a.cdp_host
     a = ap.parse_args(["check", "--cdp", "--cdp-host", "10.0.0.5"])
@@ -172,6 +173,17 @@ def test_cdp_flag():
     # --cdp-host alone (no --cdp) is harmless
     a = ap.parse_args(["--cdp-host", "10.0.0.9", "check"])
     assert a.cdp is False and a.cdp_host == "10.0.0.9", (a.cdp, a.cdp_host)
+    # env fallback at launch: no flag -> CDP_HOST wins; flag beats env
+    import os, types
+    class A: pass
+    a1 = A(); a1.cdp = True; a1.cdp_host = None
+    os.environ["CDP_HOST"] = "172.30.96.1"
+    host = getattr(a1, "cdp_host", None) or os.environ.get("CDP_HOST") or "127.0.0.1"
+    assert host == "172.30.96.1", host
+    a2 = A(); a2.cdp = True; a2.cdp_host = "10.9.8.7"
+    host = getattr(a2, "cdp_host", None) or os.environ.get("CDP_HOST") or "127.0.0.1"
+    assert host == "10.9.8.7", host
+    del os.environ["CDP_HOST"]
     print("ok --cdp flag (both positions, default + explicit port + host)")
 
 
