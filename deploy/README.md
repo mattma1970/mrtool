@@ -113,6 +113,48 @@ wsl -d Ubuntu-dsh -u dsh dsh
 #    mrtool.py --cdp check / search / refresh --store ...
 ```
 
+## Removal (freeing the disk space)
+
+Everything in the distro except the research data is re-creatable by
+re-running the installer, so removal is a backup + unregister.
+
+**1. Back up the data** (the only irreplaceable part is `store.db` +
+`data/`, inside the distro):
+
+```powershell
+wsl -d Ubuntu-dsh -u dsh bash -lc "cd ~/dsh/mrtool && tar czf /tmp/mrtool-backup.tgz store.db athletes.json data 2>/dev/null; echo done"
+copy "\\wsl.localhost\Ubuntu-dsh\temp\mrtool-backup.tgz" C:\backups\
+```
+
+**2. Delete the distro** (irreversible — do step 1 first):
+
+```powershell
+wsl --terminate Ubuntu-dsh
+wsl --unregister Ubuntu-dsh
+```
+
+`wsl --unregister` deletes the distro's `ext4.vhdx` (the ~3-5 GB). The
+`profile-cdp/` Cloudflare profile goes with it — the next install just means
+passing Cloudflare again.
+
+**3. Leftovers (only on NAT-mode machines, e.g. Windows 10):**
+
+```powershell
+netsh interface portproxy delete v4tov4 listenaddress=<wsl-nat-ip> listenport=9222
+Remove-NetFirewallRule -DisplayName "mrtool CDP (WSL)"
+```
+
+On mirrored-mode machines (Windows 11 23H2+) there are no Windows-side
+artifacts to remove. Tailscale, Chrome, and any pre-existing distros are
+untouched by the installer and therefore by this.
+
+**Coming back later:** re-run `install.ps1` as before, then restore the
+backup inside the fresh distro:
+
+```powershell
+wsl -d Ubuntu-dsh -u dsh bash -lc "cd ~/dsh/mrtool && tar xzf /mnt/c/backups/mrtool-backup.tgz"
+```
+
 ## Security notes
 
 - The agent's only meaningful egress is the tailnet (model endpoint +
