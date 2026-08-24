@@ -517,13 +517,22 @@ if (-not $Bundle) { Fail "no bundle source: pass -RepoPath (a local mrtool git c
 # All file transfers go through the 'wsl' channel (see Send-ToDistro), never
 # through the \\wsl.localhost file share.
 
-Step "copy bundle + bootstrap script into $Distro (via wsl stdin)" {
+Step "copy bundle into $Distro; bootstrap script comes from the bundle" {
     # must match the bootstrap's $BASE/bundle (= /home/<user>/<workdir>/bundle)
     $dst = "/home/$TargetUser/$WorkDir/bundle"
-    $n1 = Send-ToDistro $Bundle "$dst/mrtool-bundle-$stamp.tar.gz" "644"
-    $n2 = Send-ToDistro (Join-Path $PSScriptRoot "bootstrap-wsl.sh") "/root/bootstrap-wsl.sh" "755"
-    Ok "bundle in distro: $dst/mrtool-bundle-$stamp.tar.gz ($n1 bytes)"
-    Ok "bootstrap script: /root/bootstrap-wsl.sh ($n2 bytes)"
+    $bpath = "$dst/mrtool-bundle-$stamp.tar.gz"
+    $n1 = Send-ToDistro $Bundle $bpath "644"
+    # The bootstrap script is extracted from the BUNDLE, not from the working
+    # tree: git archive contains the committed bytes (always LF), while a
+    # Windows checkout with core.autocrlf=true rewrites .sh files to CRLF,
+    # which makes bash choke (set: pipefail^M) and corrupts every variable.
+    $ex = & wsl -d $Distro -u root -- /bin/bash -c "rm -rf /tmp/mrtool-x && mkdir -p /tmp/mrtool-x && tar -xzf '$bpath' -C /tmp/mrtool-x 'mrtool/deploy/bootstrap-wsl.sh' && cp -f /tmp/mrtool-x/mrtool/deploy/bootstrap-wsl.sh /root/bootstrap-wsl.sh && chmod 755 /root/bootstrap-wsl.sh && wc -c < /root/bootstrap-wsl.sh" 2>&1
+    if ($LASTEXITCODE -ne 0) { Fail "could not extract bootstrap-wsl.sh from the bundle (wsl exited $LASTEXITCODE)" }
+    $n2 = ""
+    foreach ($l in @($ex)) { $t = Get-CleanLine $l; if ($t -match '^\d+$') { $n2 = $t } }
+    if ($n2 -eq "") { Fail "could not verify /root/bootstrap-wsl.sh (no size readback)" }
+    Ok "bundle in distro: $bpath ($n1 bytes)"
+    Ok "bootstrap script: /root/bootstrap-wsl.sh ($n2 bytes, from bundle)"
 }
 
 if ($ModelKey) {

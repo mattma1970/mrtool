@@ -15,8 +15,16 @@
 #   $6 CDP_MODE     mirrored | nat | unknown  (from install.ps1's loopback probe)
 #
 # The model API key is read from $WORKDIR/.bootstrap-key (a 0600 file that
-# install.ps1 copies in via \\wsl$) and is removed after use.
+# install.ps1 stages) and is removed after use.
 set -euo pipefail
+
+# Never block on stdin (apt/debconf prompts read it): EOF beats a hang.
+exec </dev/null
+
+# Remove garbage from interrupted runs (a CRLF-corrupted run creates a
+# directory literally named 'dsh<CR>' under $HOME).
+CR="$(printf '\r')"
+for g in "$HOME"/*; do case "$g" in *"$CR"*) rm -rf -- "$g" ;; esac; done
 
 WORKDIR="${1:-dsh}"
 MODEL_BASE="${2:-http://100.81.7.23:8889/v1}"
