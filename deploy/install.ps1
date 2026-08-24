@@ -261,7 +261,7 @@ if (-not $HasDistro) {
 
     Step "install WSL2 distro (Ubuntu-24.04) as '$Distro'" {
         $installed = $false
-        & wsl --install -d Ubuntu-24.04 --name $Distro --no-launch *> $null
+        $wslOut = & wsl --install -d Ubuntu-24.04 --name $Distro --no-launch 2>&1
         if ($LASTEXITCODE -eq 0) { $installed = $true }
         if (-not $installed) {
             Warn "retrying with 'wsl --install -d Ubuntu-24.04' (older wsl.exe)"
@@ -276,12 +276,28 @@ if (-not $HasDistro) {
         }
     }
     $seen = $false
-    for ($i = 0; $i -lt 45; $i++) {
+    for ($i = 0; $i -lt 60; $i++) {
         Start-Sleep -Seconds 2
         $now = & wsl -l -q 2>&1
         if ($LASTEXITCODE -eq 0 -and ($now | Select-String -SimpleMatch $Distro -Quiet)) { $seen = $true; break }
     }
-    if (-not $seen) { Fail "distro did not appear yet - a reboot is probably required. Reboot, then re-run (idempotent)." }
+    if (-not $seen) {
+        # WSL sometimes defers the import until the engine is up to date.
+        Say "  distro not visible yet - trying 'wsl --update' (engine update)"
+        & wsl --update 2>&1 | ForEach-Object { Say "  $_" }
+        for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 2
+            $now = & wsl -l -q 2>&1
+            if ($LASTEXITCODE -eq 0 -and ($now | Select-String -SimpleMatch $Distro -Quiet)) { $seen = $true; break }
+        }
+    }
+    if (-not $seen) {
+        $tail = ""
+        if ($wslOut) { $tail = ($wslOut | ForEach-Object { $_.ToString() } | Select-Object -Last 5) -join " / " }
+        $st = & wsl -l -v 2>&1
+        $stj = if ($st) { ($st | ForEach-Object { $_.ToString() }) -join " ; " } else { "(none)" }
+        Fail "distro did not appear after install. wsl said: $tail -- distro list now: $stj . A reboot is probably required: reboot, then re-run (idempotent)."
+    }
     $vline = (& wsl -l -v 2>&1) | Select-String -SimpleMatch $Distro
     if ($vline -and ($vline.Line -notmatch '\b2\s*$')) {
         Fail "distro is not running on WSL2. Run 'wsl --update' in an admin PowerShell (installs the WSL2 kernel), then re-run (idempotent)."
