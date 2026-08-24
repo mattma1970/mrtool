@@ -19,6 +19,9 @@ cookies*.json
 cookies.txt
 *cookies*.txt
 
+# deploy: the real model key (example file is tracked, this one is not)
+deploy/credentials
+
 # store backups made by sync-import
 store.db.bak-*
 
