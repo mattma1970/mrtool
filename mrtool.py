@@ -357,6 +357,62 @@ def _has_display() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
+def _find_search_input(page, candidates_out: Path):
+    """Locate the search input via a ladder of likely selectors."""
+    sel_ladder = [
+        'input[type="search"]', 'input[name="q"]', 'input[name="s"]',
+        '#search-input', '.search-input input', 'input[type="text"]',
+    ]
+    for sel in sel_ladder:
+        loc = page.locator(sel).first
+        try:
+            if loc.count() and loc.is_visible():
+                return loc, sel
+        except Exception:
+            continue
+    page.screenshot(path=str(candidates_out.parent / "search_page.png"))
+    sys.exit(f"error: could not find the search input (selectors tried: "
+             f"{sel_ladder}). Screenshot saved for inspection:\n"
+             f"        {candidates_out.parent / 'search_page.png'}")
+
+
+def _fire_search(box, page) -> str:
+    """After BOX is filled, trigger the search. Prefer clicking a real submit
+    control (most reliable for JS-driven forms); fall back to Enter.
+    Returns a short description of how it fired (for the log)."""
+    scope = page
+    try:
+        form = box.locator("xpath=ancestor::form[1]")
+        if form.count():
+            scope = form
+    except Exception:
+        scope = page
+    for sel in ['input[type="submit"]', 'button[type="submit"]',
+                'button:has-text("search")', '[role="button"]', 'button']:
+        try:
+            loc = scope.locator(sel).first
+            if loc.count() and loc.is_visible():
+                loc.click()
+                return "button <" + sel + ">"
+        except Exception:
+            continue
+    box.press("Enter")
+    return "Enter key"
+
+
+def _wait_for_profile_links(page, timeout: float = 10) -> bool:
+    """Wait up to TIMEOUT seconds for athlete-profile links to appear."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if page.locator('a[href*="athlete-profile"]').count() > 0:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
+
+
 def _do_search(ctx, page, name: str, candidates_out: Path):
     """Run the on-site search for NAME; return list of candidate dicts."""
     page.goto(BASE_URL + SEARCH_PATH, wait_until="domcontentloaded")
@@ -365,29 +421,17 @@ def _do_search(ctx, page, name: str, candidates_out: Path):
     if is_challenge(title, page.content()[:8000]):
         sys.exit("error: Cloudflare challenge appeared during search.\n"
                  "        Re-run auth, or retry with --headed.")
-    # Find the search input: try a ladder of likely selectors.
-    sel_ladder = [
-        'input[type="search"]', 'input[name="q"]', 'input[name="s"]',
-        '#search-input', '.search-input input', 'input[type="text"]',
-    ]
-    box = None
-    for sel in sel_ladder:
-        loc = page.locator(sel).first
-        try:
-            if loc.count() and loc.is_visible():
-                box = loc
-                break
-        except Exception:
-            continue
-    if box is None:
-        page.screenshot(path=str(candidates_out.parent / "search_page.png"))
-        sys.exit(f"error: could not find the search input (selectors tried: "
-                 f"{sel_ladder}). Screenshot saved for inspection:\n"
-                 f"        {candidates_out.parent / 'search_page.png'}")
+    box, sel = _find_search_input(page, candidates_out)
+    log(f"search input matched selector: {sel}")
     box.click()
     box.fill(name)
-    box.press("Enter")
-    time.sleep(5)  # let XHR settle
+    how = _fire_search(box, page)
+    log(f"search fired via {how}")
+    got = _wait_for_profile_links(page, timeout=10)
+    if not got:
+        page.screenshot(path=str(candidates_out.parent / "search_noresult.png"))
+        log("No profile links appeared after the search — saved screenshot "
+            "search_noresult.png for inspection.")
     return _read_candidates(page)
 
 
