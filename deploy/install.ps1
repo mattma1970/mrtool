@@ -267,7 +267,7 @@ if (-not $HasDistro) {
 
     Step "create local user '$DshUser' + set as default (first boot as root)" {
         $tmpPass = [guid]::NewGuid().ToString("N")
-        $bs = "id $DshUser >/dev/null 2>&1 || useradd -m -s /bin/bash $DshUser; echo '$DshUser:$tmpPass' | chpasswd; echo '$DshUser ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/$DshUser; chmod 440 /etc/sudoers.d/$DshUser; printf '[user]\ndefault=$DshUser\n' > /etc/wsl.conf"
+        $bs = "id $DshUser >/dev/null 2>&1 || useradd -m -s /bin/bash $DshUser; echo '${DshUser}:${tmpPass}' | chpasswd; echo '$DshUser ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/$DshUser; chmod 440 /etc/sudoers.d/$DshUser; printf '[user]\ndefault=$DshUser\n' > /etc/wsl.conf"
         & wsl -d $Distro -u root -- /bin/bash -c $bs
         if ($LASTEXITCODE -ne 0) { Fail "could not create $DshUser inside $Distro" }
         Ok "user $DshUser created and set as default"
@@ -275,8 +275,11 @@ if (-not $HasDistro) {
 }
 $TargetUser = $DshUser
 if (-not $CreatedDistro) {
-    $ru = (& wsl -d $Distro -- whoami 2>&1).Trim()
-    if ($LASTEXITCODE -eq 0 -and $ru) { $TargetUser = $ru }
+    # last stdout line is the username (wsl may prepend notice lines)
+    $ruOut = & wsl -d $Distro -- whoami 2>&1
+    $ru = ""
+    if ($LASTEXITCODE -eq 0 -and $ruOut) { $ru = @($ruOut)[-1].ToString().Trim() }
+    if ($ru) { $TargetUser = $ru }
     Ok "reusing distro default user: $TargetUser"
 }
 
@@ -299,22 +302,26 @@ $listener = $null
 try {
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 18889)
     $listener.Start()
-    $code = & wsl -d $Distro -- bash -c "curl -s --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:18889" 2>$null
-    $Shared = -not ($code -eq "000")
+    $codeOut = & wsl -d $Distro -- bash -c "curl -s --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:18889" 2>$null
+    $code = ""
+    if ($codeOut) { $code = @($codeOut)[-1].ToString().Trim() }
+    $Shared = ($code -ne "" -and $code -ne "000")
 } catch { $Shared = $null }
 finally { if ($listener) { try { $listener.Stop() } catch {} } }
 
 $CdpMode = "unknown"
 if ($Shared -eq $true) { $CdpMode = "mirrored" }
 elseif ($Shared -eq $false) { $CdpMode = "nat" }
-Ok "localhost shared with $Distro: $Shared  ->  CDP mode: $CdpMode"
+Ok "localhost shared with ${Distro}: $Shared  ->  CDP mode: $CdpMode"
 
 if ($CdpMode -eq "nat") {
     if (-not $IsAdmin) {
         Warn "NAT mode needs admin for the portproxy + firewall rule; skipping (re-run as admin to apply)."
     } else {
         Step "expose Chrome debug port to the WSL NAT subnet (portproxy + scoped firewall rule)" {
-            $gw = (& wsl -d $Distro -- bash -c "ip route show default | cut -d' ' -f3 | head -1" 2>$null).Trim()
+            $gwOut = & wsl -d $Distro -- bash -c "ip route show default | cut -d' ' -f3 | head -1" 2>$null
+            $gw = ""
+            if ($gwOut) { $gw = @($gwOut)[-1].ToString().Trim() }
             if (-not $gw) { Fail "could not determine the WSL NAT gateway" }
             $gwSub = (($gw -split '\.')[0..2]) -join '.'
             $hostIp = (Get-NetIPAddress | Where-Object { $_.IPAddress -like ($gwSub + '*') } | Select-Object -First 1).IPAddress
@@ -386,7 +393,7 @@ if ($ModelKey) {
 Step "run bootstrap inside $Distro (node, dsh, venv, mrtool, dsh config)" {
     & wsl -d $Distro -u root -- /bin/bash -c "HOME=/home/$TargetUser bash /root/bootstrap-wsl.sh $WorkDir $ModelBase $ModelId $ProviderId $FORCEINT $CdpMode"
     if ($LASTEXITCODE -ne 0) { Fail "bootstrap failed (see output above)" }
-    $chown = "g=`$(id -gu $TargetUser 2>/dev/null || echo $TargetUser); chown -R $TargetUser:`$g /home/$TargetUser/$WorkDir /home/$TargetUser/.dsh; chown $TargetUser /home/$TargetUser/.bashrc"
+    $chown = "g=`$(id -gu $TargetUser 2>/dev/null || echo $TargetUser); chown -R ${TargetUser}:`$g /home/$TargetUser/$WorkDir /home/$TargetUser/.dsh; chown $TargetUser /home/$TargetUser/.bashrc"
     & wsl -d $Distro -u root -- /bin/bash -c $chown
     Ok "bootstrap complete; ownership set to $TargetUser"
 }
