@@ -154,7 +154,8 @@ else { Warn ("distro '{0}': will be created fresh" -f $Distro) }
 
 # Disk space. WSL distro images land under the drive that holds
 # %LOCALAPPDATA% (the Store-package default), so that's the drive that matters.
-$driveRoot = [System.IO.Path]::GetPathRoot($env:LOCALAPPDATA)
+# GetPathRoot returns 'C:\'; Win32_LogicalDisk.DeviceID is 'C:' - strip the backslash.
+$driveRoot = [System.IO.Path]::GetPathRoot($env:LOCALAPPDATA).TrimEnd('\')
 $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$driveRoot'" -ErrorAction SilentlyContinue
 if ($disk) {
     $totalGB = [math]::Round($disk.Size / 1GB, 1)
