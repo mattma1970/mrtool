@@ -154,6 +154,39 @@ to the **IP + TLS fingerprint** that earned it, this is reliable when you run
 (machine A). Importing the same file onto machine B (a different IP) is a
 gamble that `check` will settle — if it fails there, fall through to Pattern 2.
 
+### CDP attach mode — when your normal browser passes *without* any clearance
+
+Open your cookie jar in the **normal** browser that loads the site fine. If you
+see **no `cf_clearance` cookie at all** (just the site's own session cookie,
+e.g. `PHPSESSID`), then Cloudflare is not challenging your IP — it passes your
+trusted browser silently. There is nothing to relay. The fix is to make the
+tool drive **that exact browser the way a human launched it**: you start Chrome
+yourself (real binary, a profile dir, a local debug port, no automation flags
+at launch), let it load the site the way your daily browser would, and mrtool
+*attaches* to the already-running Chrome over its debug port and navigates it.
+Because no challenge is ever issued to this browser, the attached automation
+has nothing to get caught on.
+
+```bash
+# 1. One double-click opens real Chrome on a dedicated profile with debug port 9222:
+launch_cdp.bat          # Windows   (Linux/macOS: ./launch_cdp.sh)
+# 2. WAIT for mastersrankings.com to load normally in that window.
+# 3. Verify the attached browser passes:
+.venv/Scripts/python mrtool.py --cdp check
+# 4. Keep that Chrome window OPEN and run anything with --cdp:
+.venv/Scripts/python mrtool.py --cdp search "Jane Smith"
+.venv/Scripts/python mrtool.py --cdp refresh --store
+```
+
+- `--cdp` attaches to port **9222** (override with `--cdp --cdp-port PORT`).
+- `check` in CDP mode opens a **fresh tab**, probes, and closes only that tab —
+  your main tab is untouched.
+- The launcher uses a **separate** profile dir (`profile-cdp/`, git-ignored),
+  so the CF state here stays isolated from the tool's `profile/`.
+- This is a **single-machine** pattern: fetch and research both happen on the
+  machine whose browser passed. If you still need the data on machine B, run
+  `--cdp fetch … --store` on A, then `sync-export` / `sync-import` as in Pattern 2.
+
 ### Pattern 1 — carry the session over (whole tool runs on B)
 
 The entire Cloudflare session lives in one directory: `profile/` (Playwright's

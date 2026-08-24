@@ -139,6 +139,49 @@ def test_cookie_parsers(tmp):
     print("ok cookie parsers (json array / wrapped / cookies.txt)")
 
 
+def test_cdp_flag():
+    ap = mrtool.build_parser()
+    # before the subcommand (top-level) — flag, default port
+    a = ap.parse_args(["--cdp", "check"])
+    assert a.cdp is True and a.cdp_port == 9222, (a.cdp, a.cdp_port)
+    # before the subcommand — flag + explicit port
+    a = ap.parse_args(["--cdp", "--cdp-port", "9333", "check"])
+    assert a.cdp is True and a.cdp_port == 9333, (a.cdp, a.cdp_port)
+    # after the subcommand (subparser) — flag, default port
+    a = ap.parse_args(["check", "--cdp"])
+    assert a.cdp is True and a.cdp_port == 9222, (a.cdp, a.cdp_port)
+    # after the subcommand (subparser) — flag + explicit port
+    a = ap.parse_args(["check", "--cdp", "--cdp-port", "9444"])
+    assert a.cdp is True and a.cdp_port == 9444, (a.cdp, a.cdp_port)
+    # not given at all -> False (launch normally), port default intact
+    a = ap.parse_args(["check"])
+    assert a.cdp is False and a.cdp_port == 9222, (a.cdp, a.cdp_port)
+    # --cdp does not clobber --browser when both given before subcommand
+    a = ap.parse_args(["--browser", "chrome", "--cdp", "search", "Jane"])
+    assert a.cdp is True and a.browser == "chrome", (a.cdp, a.browser)
+    # --cdp-port alone (no --cdp) is harmless; cdp stays False
+    a = ap.parse_args(["--cdp-port", "9555", "check"])
+    assert a.cdp is False, a.cdp
+    print("ok --cdp flag (both positions, default + explicit port)")
+
+
+def test_cdp_context_close_is_noop():
+    # _CdpContext.close() must not touch the real context (leaves human's Chrome running)
+    calls = []
+    class FakeCtx:
+        def close(self):
+            calls.append("closed")
+        @property
+        def pages(self):
+            return []
+    cc = mrtool._CdpContext(FakeCtx(), browser=None)
+    cc.close()
+    assert calls == [], calls
+    # attribute access proxies to the real context
+    assert cc.pages == []
+    print("ok _CdpContext (close no-op, attr proxy)")
+
+
 def main():
     tmp = Path(__file__).parent
     test_slugify()
@@ -149,6 +192,8 @@ def main():
     test_registry_roundtrip(tmp)
     test_js_candidate_snippet()
     test_cookie_parsers(tmp)
+    test_cdp_flag()
+    test_cdp_context_close_is_noop()
     print("\nall core logic tests passed")
 
 

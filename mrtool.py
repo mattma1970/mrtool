@@ -48,6 +48,19 @@ Two-machine coordination (browser on machine A, research/agent on machine B):
   # if check fails (CF bound the token to A's IP), use the split setup instead:
   python3 mrtool.py sync-export             # A: tar up store.db + registry
   # move to B:  python3 mrtool.py sync-import mrtool-sync-<stamp>.tar.gz
+
+ CDP mode (your NORMAL browser passes Cloudflare silently — the tool's
+ launched Chrome does not, and no cf_clearance to relay exists because
+ your IP is never challenged at all):
+   1. Double-click launch_cdp.bat (or launch_cdp.sh on Linux) — opens real
+      Chrome with a local debug port (9222) on its own profile-cdp/ dir.
+   2. Wait for mastersrankings.com to load normally in that window.
+   3. Run any command with --cdp; it ATTACHES to that already-running
+      Chrome and drives it (port 9222; override with --cdp --cdp-port PORT):
+   python3 mrtool.py --cdp check
+   python3 mrtool.py --cdp search "Jane Smith"
+   python3 mrtool.py --cdp refresh --store
+   Keep the launcher's Chrome window open for the whole session.
 """
 
 import argparse
@@ -162,8 +175,45 @@ def _win_executable(app: str):
     return None
 
 
+class _CdpContext:
+    """A CDP-attached context whose close() leaves the human's Chrome running."""
+    def __init__(self, ctx, browser):
+        self._ctx = ctx
+        self._browser = browser
+    def __getattr__(self, name):
+        return getattr(self._ctx, name)
+    def close(self):
+        log("CDP mode: leaving the attached Chrome running (close its window when done)")
+
+
 def launch(p, args, headless: bool, wait_for_manual: bool = False):
-    """Launch a persistent-context browser; returns (context, page)."""
+    """Launch a persistent-context browser; returns (context, page).
+
+    With --cdp, instead of launching, attaches to an already-running Chrome
+    (started by a human with --remote-debugging-port, see launch_cdp.bat).
+    The browser then looks exactly like a normal human-driven one; if the
+    site already loaded in it without a challenge, Cloudflare has nothing
+    to flag our navigations against.
+    """
+    cdp = getattr(args, "cdp", False)
+    if cdp:
+        port = getattr(args, "cdp_port", 9222)
+        endpoint = f"http://127.0.0.1:{port}"
+        try:
+            browser = p.chromium.connect_over_cdp(endpoint)
+        except Exception as e:
+            sys.exit(f"error: could not attach to a running Chrome at {endpoint}.\n"
+                     f"        Start one first: run launch_cdp.bat (or start Chrome with\n"
+                     f"        --user-data-dir=profile --remote-debugging-port={port}), wait for\n"
+                     f"        the site to load, then re-run the mrtool command with --cdp.")
+        if not browser.contexts:
+            sys.exit(f"error: attached to {endpoint} but found no browser context —\n"
+                     f"        make sure Chrome is actually open.")
+        ctx = browser.contexts[0]
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        log(f"attached to running Chrome at {endpoint} (CDP mode)")
+        return _CdpContext(ctx, browser), page
+
     kind, exe = browser_kind(args)
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     kwargs = dict(
@@ -877,31 +927,51 @@ def cmd_import_session(args) -> None:
 
 
 def cmd_check(args) -> None:
-    """Headless probe: does the current profile pass Cloudflare from here?"""
-    if not PROFILE_DIR.exists() or not any(PROFILE_DIR.iterdir()):
+    """Headless probe: does the current profile pass Cloudflare from here?
+
+    In CDP mode (--cdp) the probe runs in a fresh tab of the human's
+    already-running Chrome and closes only that tab afterwards.
+    """
+    cdp = getattr(args, "cdp", False)
+    if not cdp and (not PROFILE_DIR.exists() or not any(PROFILE_DIR.iterdir())):
         sys.exit("error: no profile/ — import a session first "
                  "(import-session FILE) or run `auth`")
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         ctx, page = launch(p, args, headless=True)
-        page.goto(BASE_URL + RANKINGS_PATH, wait_until="domcontentloaded")
-        time.sleep(5)
-        title, html = page.title(), page.content()
-        cookies = ctx.cookies()
-        cf = [c["name"] for c in cookies
-              if c["name"].startswith(("cf_", "PHPSESSID", "wordpress"))]
-        ctx.close()
+        if cdp:
+            page = ctx.new_page()
+        try:
+            page.goto(BASE_URL + RANKINGS_PATH, wait_until="domcontentloaded")
+            time.sleep(5)
+            title, html = page.title(), page.content()
+            cookies = ctx.cookies()
+        finally:
+            if cdp:
+                page.close()
+            ctx.close()
+    cf = [c["name"] for c in cookies
+          if c["name"].startswith(("cf_", "PHPSESSID", "wordpress"))]
     if is_challenge(title, html):
         log("CHECK FAILED — still seeing a Cloudflare challenge from this machine.")
         log(f"  title={title!r}  cookies={cf or '(none)'}")
-        log("The clearance likely did not carry over (Cloudflare often binds its")
-        log("token to the IP / fingerprint that earned it). Use the split setup:")
-        log("  - keep fetching on your machine, then `sync-export` + `sync-import` here, OR")
-        log("  - re-run `auth` here if this machine has a browser you can drive.")
+        if cdp:
+            log("In CDP mode this means the attached Chrome itself is being challenged.")
+            log("Let it finish the challenge by hand in its window (click the checkbox),")
+            log("then re-run: python3 mrtool.py --cdp check")
+        else:
+            log("The clearance likely did not carry over (Cloudflare often binds its")
+            log("token to the IP / fingerprint that earned it). Use the split setup:")
+            log("  - keep fetching on your machine, then `sync-export` + `sync-import` here, OR")
+            log("  - re-run `auth` here if this machine has a browser you can drive.")
         sys.exit(2)
     log(f"CHECK PASSED — the session works from this machine. title={title!r}")
     log(f"cookies present: {cf or '(none matched common names)'}")
-    log("You can now run headless:  python3 mrtool.py fetch <ids> --store")
+    if cdp:
+        log("Keep that Chrome window open and re-run commands with --cdp, e.g.:")
+        log("  python3 mrtool.py --cdp search \"Jane Smith\"")
+    else:
+        log("You can now run headless:  python3 mrtool.py fetch <ids> --store")
 
 
 def _parse_netscape(text: str):
@@ -1092,7 +1162,7 @@ def cmd_sync_import(args) -> None:
     log("Verify:  python3 mrtool.py store")
 
 
-def main() -> None:
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     # --browser/--headed are accepted both before and after the subcommand
@@ -1106,10 +1176,20 @@ def main() -> None:
                         help="browser engine (default: playwright's bundled chromium)")
     common.add_argument("--headed", action="store_true", default=argparse.SUPPRESS,
                         help="run with a visible window (fallback if headless hits Cloudflare)")
+    common.add_argument("--cdp", action="store_true", default=argparse.SUPPRESS,
+                        help="attach to an already-running Chrome (launched with "
+                             "--remote-debugging-port, see launch_cdp.bat) instead of "
+                             "launching one; port via --cdp-port (default 9222)")
+    common.add_argument("--cdp-port", type=int, default=argparse.SUPPRESS, metavar="PORT",
+                        help=argparse.SUPPRESS)
     ap.add_argument("--browser", choices=["chromium", "chrome", "msedge"],
                     default="chromium",
                     help=argparse.SUPPRESS)
     ap.add_argument("--headed", action="store_true",
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--cdp", action="store_true",
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--cdp-port", type=int, default=9222,
                     help=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -1204,6 +1284,11 @@ def main() -> None:
                         help="install a sync tarball into this checkout")
     si.add_argument("file", help="the mrtool-sync-*.tar.gz to install")
 
+    return ap
+
+
+def main() -> None:
+    ap = build_parser()
     args = ap.parse_args()
     {"auth": cmd_auth, "search": cmd_search, "refresh": cmd_refresh,
      "list": cmd_list, "profile": cmd_profile, "store": cmd_store,

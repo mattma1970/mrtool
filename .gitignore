@@ -5,6 +5,7 @@
 # browser profile — contains Cloudflare cookies / login session.
 # MUST NOT be committed anywhere.
 profile/
+profile-cdp/
 profile.bak-*/
 
 # session + sync transfer bundles (contain cookies / research data)
