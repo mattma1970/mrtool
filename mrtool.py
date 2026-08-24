@@ -217,8 +217,23 @@ def launch(p, args, headless: bool, wait_for_manual: bool = False):
             sys.exit(f"error: attached to {endpoint} but found no browser context —\n"
                      f"        make sure Chrome is actually open.")
         ctx = browser.contexts[0]
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        log(f"attached to running Chrome at {endpoint} (CDP mode)")
+        # Prefer the tab already on the target site: that's the one the human
+        # passed Cloudflare on, so navigating IT reuses that clearance. The
+        # first/blank tab can trigger a fresh challenge on its first nav,
+        # which is what made the old pages[0] choice time out at 30s.
+        page = None
+        host = BASE_URL.split("://", 1)[1].split("/", 1)[0]
+        for pg in list(ctx.pages):
+            try:
+                if host in (pg.url or ""):
+                    page = pg
+                    break
+            except Exception:
+                continue
+        if page is None:
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        log(f"attached to running Chrome at {endpoint} (CDP mode); "
+            f"driving tab {page.url!r}")
         return _CdpContext(ctx, browser), page
 
     kind, exe = browser_kind(args)
@@ -240,6 +255,48 @@ def launch(p, args, headless: bool, wait_for_manual: bool = False):
         ctx = p.chromium.launch_persistent_context(**kwargs)
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
     return ctx, page
+
+
+def _wait_past_challenge(page, timeout: float = 60) -> bool:
+    """Poll until a Cloudflare challenge (if any) on this page clears.
+
+    Returns True if the page is challenge-free when done. Gives a human up to
+    TIMEOUT seconds to solve a turnstile in the visible browser window,
+    instead of the command dying on a fixed navigation timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            challenged = is_challenge(page.title(), page.content()[:8000])
+        except Exception:
+            time.sleep(1.0)
+            continue
+        if not challenged:
+            time.sleep(1.5)  # brief settle so the real content lands
+            return True
+        time.sleep(1.0)
+    try:
+        return not is_challenge(page.title(), page.content()[:8000])
+    except Exception:
+        return False
+
+
+def _goto_resilient(page, url: str, timeout: float = 60) -> None:
+    """Navigate to URL, surviving a Cloudflare challenge mid-navigation.
+
+    wait_until='commit' returns as soon as the response is committed, so a
+    slow or challenge-held domcontentloaded can't eat the default 30s budget.
+    Any challenge is then waited out (a human can click it), and we settle on
+    domcontentloaded best-effort before returning."""
+    try:
+        page.goto(url, wait_until="commit", timeout=20000)
+    except Exception:
+        # some CF interstitials hold even 'commit'; a second attempt lands
+        page.goto(url, wait_until="commit", timeout=20000)
+    _wait_past_challenge(page, timeout=timeout)
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=15000)
+    except Exception:
+        pass
 
 
 def watch_network(page, out_path: Path) -> None:
@@ -333,7 +390,7 @@ def cmd_auth(args) -> None:
         log("  3. As a sanity check, search one athlete you know and open the profile.")
         log("Then come back here and press ENTER to verify the session.")
         input("[mrtool] Press ENTER when the site looks normal in the browser... ")
-        page.goto(BASE_URL + RANKINGS_PATH, wait_until="domcontentloaded")
+        _goto_resilient(page, BASE_URL + RANKINGS_PATH)
         time.sleep(4)
         title = page.title()
         html = page.content()
@@ -422,7 +479,7 @@ def _wait_for_profile_links(page, timeout: float = 10) -> bool:
 
 def _do_search(ctx, page, name: str, candidates_out: Path):
     """Run the on-site search for NAME; return list of candidate dicts."""
-    page.goto(BASE_URL + SEARCH_PATH, wait_until="domcontentloaded")
+    _goto_resilient(page, BASE_URL + SEARCH_PATH)
     time.sleep(2)
     title = page.title()
     if is_challenge(title, page.content()[:8000]):
@@ -1007,7 +1064,7 @@ def cmd_check(args) -> None:
         if cdp:
             page = ctx.new_page()
         try:
-            page.goto(BASE_URL + RANKINGS_PATH, wait_until="domcontentloaded")
+            _goto_resilient(page, BASE_URL + RANKINGS_PATH)
             time.sleep(5)
             title, html = page.title(), page.content()
             cookies = ctx.cookies()
