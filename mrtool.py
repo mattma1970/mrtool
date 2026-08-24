@@ -57,7 +57,9 @@ Two-machine coordination (browser on machine A, research/agent on machine B):
       Chrome with a local debug port (9222) on its own profile-cdp/ dir.
    2. Wait for mastersrankings.com to load normally in that window.
    3. Run any command with --cdp; it ATTACHES to that already-running
-      Chrome and drives it (port 9222; override with --cdp --cdp-port PORT):
+      Chrome and drives it (host 127.0.0.1, port 9222; override with
+      --cdp-host HOST / --cdp-port PORT — e.g. the WSL NAT gateway IP when
+      mrtool runs inside WSL2 while Chrome runs on Windows):
    python3 mrtool.py --cdp check
    python3 mrtool.py --cdp search "Jane Smith"
    python3 mrtool.py --cdp refresh --store
@@ -199,7 +201,8 @@ def launch(p, args, headless: bool, wait_for_manual: bool = False):
     cdp = getattr(args, "cdp", False)
     if cdp:
         port = getattr(args, "cdp_port", 9222)
-        endpoint = f"http://127.0.0.1:{port}"
+        host = getattr(args, "cdp_host", "127.0.0.1")
+        endpoint = f"http://{host}:{port}"
         try:
             browser = p.chromium.connect_over_cdp(endpoint)
         except Exception as e:
@@ -1241,6 +1244,8 @@ def build_parser():
                              "launching one; port via --cdp-port (default 9222)")
     common.add_argument("--cdp-port", type=int, default=argparse.SUPPRESS, metavar="PORT",
                         help=argparse.SUPPRESS)
+    common.add_argument("--cdp-host", default=argparse.SUPPRESS, metavar="HOST",
+                        help=argparse.SUPPRESS)
     ap.add_argument("--browser", choices=["chromium", "chrome", "msedge"],
                     default="chromium",
                     help=argparse.SUPPRESS)
@@ -1249,6 +1254,8 @@ def build_parser():
     ap.add_argument("--cdp", action="store_true",
                     help=argparse.SUPPRESS)
     ap.add_argument("--cdp-port", type=int, default=9222,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--cdp-host", default="127.0.0.1",
                     help=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest="cmd", required=True)
 

@@ -162,7 +162,17 @@ def test_cdp_flag():
     # --cdp-port alone (no --cdp) is harmless; cdp stays False
     a = ap.parse_args(["--cdp-port", "9555", "check"])
     assert a.cdp is False, a.cdp
-    print("ok --cdp flag (both positions, default + explicit port)")
+    # --cdp-host: default 127.0.0.1, explicit value, both positions
+    a = ap.parse_args(["--cdp", "check"])
+    assert a.cdp_host == "127.0.0.1", a.cdp_host
+    a = ap.parse_args(["--cdp", "--cdp-host", "172.20.100.1", "check"])
+    assert a.cdp_host == "172.20.100.1", a.cdp_host
+    a = ap.parse_args(["check", "--cdp", "--cdp-host", "10.0.0.5"])
+    assert a.cdp is True and a.cdp_host == "10.0.0.5", (a.cdp, a.cdp_host)
+    # --cdp-host alone (no --cdp) is harmless
+    a = ap.parse_args(["--cdp-host", "10.0.0.9", "check"])
+    assert a.cdp is False and a.cdp_host == "10.0.0.9", (a.cdp, a.cdp_host)
+    print("ok --cdp flag (both positions, default + explicit port + host)")
 
 
 def test_cdp_context_close_is_noop():

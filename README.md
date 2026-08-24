@@ -194,6 +194,13 @@ launch_cdp.bat          # Windows   (Linux/macOS: ./launch_cdp.sh)
 ```
 
 - `--cdp` attaches to port **9222** (override with `--cdp --cdp-port PORT`).
+- Host is **127.0.0.1** by default (override with `--cdp-host HOST`). You only
+  need that when mrtool runs in a different network namespace from Chrome —
+  e.g. mrtool inside **WSL2 (NAT mode)** while Chrome runs on Windows: point
+  `--cdp-host` at the WSL NAT gateway IP (the host, from inside WSL:
+  `ip route show default | awk '{print $3}'`) and add a Windows portproxy so
+  that IP can reach `127.0.0.1:9222`. On Windows 11 23H2+ with **mirrored
+  networking**, localhost is shared and plain `--cdp` works unchanged.
 - `check` in CDP mode opens a **fresh tab**, probes, and closes only that tab —
   your main tab is untouched.
 - The launcher uses a **separate** profile dir (`profile-cdp/`, git-ignored),
