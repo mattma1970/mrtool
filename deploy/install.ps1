@@ -96,6 +96,33 @@ function Test-TsConnected {
     & $Bin status *> $null
     return ($LASTEXITCODE -eq 0)
 }
+function Send-ToDistro {
+    # Push a local file into the distro via 'wsl' stdin (base64, binary-safe).
+    # Deliberately avoids \\wsl.localhost / \\wsl$: the SMB file share is
+    # flaky on some machines right after a distro state change (access
+    # denied), while the wsl channel is the one that always works.
+    param([string]$LocalFile, [string]$DestPath, [string]$Mode)
+    $bytes = [System.IO.File]::ReadAllBytes($LocalFile)
+    $b64 = [System.Convert]::ToBase64String($bytes)
+    $d = Split-Path -Parent $DestPath
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "wsl"
+    $psi.Arguments = "-d `"$Distro`" -u root -- /bin/bash -c `"mkdir -p '$d' && base64 -d > '$DestPath' && chmod $Mode '$DestPath' && wc -c < '$DestPath'`""
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.UseShellExecute = $false
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $sw = New-Object System.IO.StreamWriter($proc.StandardInput.BaseStream, [System.Text.Encoding]::ASCII)
+    $sw.Write($b64)
+    $sw.Close()
+    $out = $proc.StandardOutput.ReadToEnd()
+    $proc.WaitForExit()
+    if ($proc.ExitCode -ne 0) { Fail "could not write $DestPath into $Distro (wsl exited $($proc.ExitCode))" }
+    $n = ""
+    if ($out) { $n = @($out)[-1].ToString().Trim() }
+    if ($n -ne "$($bytes.Length)") { Fail "size mismatch writing $DestPath (expected $($bytes.Length) bytes, got $n)" }
+    return $n
+}
 
 # --------------------------------------------------------------- preflight --
 Say "preflight"
@@ -141,7 +168,7 @@ $WslCmd = Get-Command wsl -ErrorAction SilentlyContinue
 $Distros = @()
 if ($WslCmd) {
     $lst = & wsl -l -q 2>&1
-    if ($LASTEXITCODE -eq 0) { $Distros = @($lst | Where-Object { $_ -match '^\S' }) }
+    if ($LASTEXITCODE -eq 0) { $Distros = @(($lst | Where-Object { $_ -match '\S' }) | ForEach-Object { $_.ToString().Trim() }) }
     else { Warn "wsl is present but 'wsl -l' failed - assuming a broken/uninitialized install" }
 }
 if (-not $WslCmd) { Warn "wsl: command not found - will install (admin)" }
@@ -365,11 +392,22 @@ if (-not $Managed) {
 if ($Managed -and $IsWin11) {
     Step "set mirrored networking on '$Distro' (ours only - never rewrites other distros)" {
         & wsl --terminate $Distro *> $null
-        & wsl --set-config $Distro networkingMode=mirrored *> $null
+        $sc = & wsl --set-config $Distro networkingMode=mirrored 2>&1
         if ($LASTEXITCODE -ne 0) {
-            Warn "could not set mirrored mode (older wsl.exe). The probe below decides the CDP mode; on a newer engine you can opt in later with 'wsl --set-config $Distro networkingMode=mirrored'."
+            $scj = if ($sc) { ($sc | ForEach-Object { $_.ToString() }) -join " / " } else { "(no output)" }
+            Say "  wsl said: $scj"
+            Say "  trying 'wsl --update' (engine) and retrying"
+            $upd = & wsl --update 2>&1
+            if ($upd) { foreach ($l in @($upd)) { Say "  $_" } }
+            $sc2 = & wsl --set-config $Distro networkingMode=mirrored 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Warn "could not set mirrored mode; staying NAT (the portproxy path below covers it). To opt in later: 'wsl --update', then 'wsl --set-config $Distro networkingMode=mirrored'."
+            } else {
+                Ok "engine updated; mirrored mode set for '$Distro'"
+            }
+        } else {
+            Ok "mirrored mode set for '$Distro'"
         }
-        Ok "networking configured for '$Distro' (takes effect on next start)"
     }
 }
 
@@ -469,26 +507,30 @@ if ($RepoPath -and -not $BundlePath) {
 if (-not $Bundle) { Fail "no bundle source: pass -RepoPath (a local mrtool git checkout) or -BundlePath (a bundle tarball)." }
 
 # ------------------------------------------------------------ distro files --
-$wslRoot = "\\wsl.localhost\$Distro"
-if (-not (Test-Path $wslRoot)) { $wslRoot = "\\wsl$\$Distro" }
+# All file transfers go through the 'wsl' channel (see Send-ToDistro), never
+# through the \\wsl.localhost file share.
 
-Step "copy bundle + bootstrap script into $Distro (via $wslRoot)" {
+Step "copy bundle + bootstrap script into $Distro (via wsl stdin)" {
     # must match the bootstrap's $BASE/bundle (= /home/<user>/<workdir>/bundle)
-    $dst = "$wslRoot\home\$TargetUser\$WorkDir\bundle"
-    New-Item -ItemType Directory -Force -Path $dst | Out-Null
-    Copy-Item $Bundle -Destination (Join-Path $dst ("mrtool-bundle-{0}.tar.gz" -f $stamp))
-    Copy-Item (Join-Path $PSScriptRoot "bootstrap-wsl.sh") "$wslRoot\root\bootstrap-wsl.sh"
-    Ok "copied"
+    $dst = "/home/$TargetUser/$WorkDir/bundle"
+    $n1 = Send-ToDistro $Bundle "$dst/mrtool-bundle-$stamp.tar.gz" "644"
+    $n2 = Send-ToDistro (Join-Path $PSScriptRoot "bootstrap-wsl.sh") "/root/bootstrap-wsl.sh" "755"
+    Ok "bundle in distro: $dst/mrtool-bundle-$stamp.tar.gz ($n1 bytes)"
+    Ok "bootstrap script: /root/bootstrap-wsl.sh ($n2 bytes)"
 }
 
 if ($ModelKey) {
     Step "stage model api key (0600; removed by the bootstrap after use)" {
-        $kdir = "$wslRoot\home\$TargetUser\$WorkDir"
-        New-Item -ItemType Directory -Force -Path $kdir | Out-Null
-        $kfile = Join-Path $kdir ".bootstrap-key"
-        Set-Content -Path $kfile -Value $ModelKey -Encoding ASCII -NoNewline
-        & wsl -d $Distro -u root -- /bin/bash -c "chmod 600 /home/$TargetUser/$WorkDir/.bootstrap-key"
-        Ok "key staged"
+        $kdir = "/home/$TargetUser/$WorkDir"
+        $kb64 = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($ModelKey))
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "wsl"
+        $psi.Arguments = "-d `"$Distro`" -u root -- /bin/bash -c `"mkdir -p '$kdir' && printf %s '$kb64' | base64 -d > '$kdir/.bootstrap-key' && chmod 600 '$kdir/.bootstrap-key'`""
+        $psi.UseShellExecute = $false
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $proc.WaitForExit()
+        if ($proc.ExitCode -ne 0) { Fail "could not stage the model key into $Distro" }
+        Ok "key staged (0600)"
     }
 }
 
