@@ -266,6 +266,9 @@ if (-not $HasDistro) {
         if (-not $installed) {
             Warn "retrying with 'wsl --install -d Ubuntu-24.04' (older wsl.exe)"
             Warn "if a 'Enter new UNIX username' prompt appears, just press Enter (users are managed as root afterwards)"
+            if (@($Distros) -contains "Ubuntu-24.04") {
+                Fail "a distro named 'Ubuntu-24.04' already exists on this machine - refusing to touch it. Reuse it with '-Distro Ubuntu-24.04', or update wsl.exe (Microsoft Store: 'Windows Subsystem for Linux') and re-run."
+            }
             & wsl --install -d Ubuntu-24.04
             $try = & wsl -l -q 2>&1
             if (-not ($try | Select-String -SimpleMatch "Ubuntu-24.04" -Quiet)) {
