@@ -98,26 +98,18 @@ function Test-TsConnected {
 }
 function Send-ToDistro {
     # Push a local file into the distro via 'wsl' stdin (base64, binary-safe).
-    # Deliberately avoids \\wsl.localhost / \\wsl$: the SMB file share is
-    # flaky on some machines right after a distro state change (access
-    # denied), while the wsl channel is the one that always works.
+    # Uses the PowerShell-native pipe - the same launch path as every other
+    # wsl call that already works on this box. NOT .NET Process redirection:
+    # old WSL clients crash on fully-piped stdio (exit -1). Also avoids
+    # \\wsl.localhost / \\wsl$: that SMB file share is flaky right after a
+    # distro state change (access denied) while the wsl channel always works.
     param([string]$LocalFile, [string]$DestPath, [string]$Mode)
     $bytes = [System.IO.File]::ReadAllBytes($LocalFile)
     $b64 = [System.Convert]::ToBase64String($bytes)
     $d = Split-Path -Parent $DestPath
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = "wsl"
-    $psi.Arguments = "-d `"$Distro`" -u root -- /bin/bash -c `"mkdir -p '$d' && base64 -d > '$DestPath' && chmod $Mode '$DestPath' && wc -c < '$DestPath'`""
-    $psi.RedirectStandardInput = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.UseShellExecute = $false
-    $proc = [System.Diagnostics.Process]::Start($psi)
-    $sw = New-Object System.IO.StreamWriter($proc.StandardInput.BaseStream, [System.Text.Encoding]::ASCII)
-    $sw.Write($b64)
-    $sw.Close()
-    $out = $proc.StandardOutput.ReadToEnd()
-    $proc.WaitForExit()
-    if ($proc.ExitCode -ne 0) { Fail "could not write $DestPath into $Distro (wsl exited $($proc.ExitCode))" }
+    $cmd = "mkdir -p '$d' && base64 -d > '$DestPath' && chmod $Mode '$DestPath' && wc -c < '$DestPath'"
+    $out = ($b64 | & wsl -d $Distro -u root -- /bin/bash -c $cmd 2>&1)
+    if ($LASTEXITCODE -ne 0) { Fail "could not write $DestPath into $Distro (wsl exited $LASTEXITCODE)" }
     $n = ""
     if ($out) { $n = @($out)[-1].ToString().Trim() }
     if ($n -ne "$($bytes.Length)") { Fail "size mismatch writing $DestPath (expected $($bytes.Length) bytes, got $n)" }
@@ -398,7 +390,7 @@ if ($Managed -and $IsWin11) {
             Say "  wsl said: $scj"
             Say "  trying 'wsl --update' (engine) and retrying"
             $upd = & wsl --update 2>&1
-            if ($upd) { foreach ($l in @($upd)) { Say "  $_" } }
+            if ($upd) { foreach ($l in @($upd)) { if ($l.ToString().Trim()) { Say "  $_" } } }
             $sc2 = & wsl --set-config $Distro networkingMode=mirrored 2>&1
             if ($LASTEXITCODE -ne 0) {
                 Warn "could not set mirrored mode; staying NAT (the portproxy path below covers it). To opt in later: 'wsl --update', then 'wsl --set-config $Distro networkingMode=mirrored'."
@@ -523,13 +515,9 @@ if ($ModelKey) {
     Step "stage model api key (0600; removed by the bootstrap after use)" {
         $kdir = "/home/$TargetUser/$WorkDir"
         $kb64 = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($ModelKey))
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = "wsl"
-        $psi.Arguments = "-d `"$Distro`" -u root -- /bin/bash -c `"mkdir -p '$kdir' && printf %s '$kb64' | base64 -d > '$kdir/.bootstrap-key' && chmod 600 '$kdir/.bootstrap-key'`""
-        $psi.UseShellExecute = $false
-        $proc = [System.Diagnostics.Process]::Start($psi)
-        $proc.WaitForExit()
-        if ($proc.ExitCode -ne 0) { Fail "could not stage the model key into $Distro" }
+        $kcmd = "mkdir -p '$kdir' && printf %s '$kb64' | base64 -d > '$kdir/.bootstrap-key' && chmod 600 '$kdir/.bootstrap-key'"
+        & wsl -d $Distro -u root -- /bin/bash -c $kcmd
+        if ($LASTEXITCODE -ne 0) { Fail "could not stage the model key into $Distro" }
         Ok "key staged (0600)"
     }
 }
