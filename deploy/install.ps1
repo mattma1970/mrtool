@@ -96,22 +96,35 @@ function Test-TsConnected {
     & $Bin status *> $null
     return ($LASTEXITCODE -eq 0)
 }
+function Get-CleanLine {
+    # wsl.exe (old clients especially) emits ANSI escapes / control chars that
+    # .Trim() does not remove - such lines look blank and break -eq tests.
+    # Strip everything outside printable ASCII.
+    param($Line)
+    return (($Line.ToString() -replace '[^\x20-\x7E]', '').Trim())
+}
 function Send-ToDistro {
-    # Push a local file into the distro via 'wsl' stdin (base64, binary-safe).
-    # Uses the PowerShell-native pipe - the same launch path as every other
-    # wsl call that already works on this box. NOT .NET Process redirection:
-    # old WSL clients crash on fully-piped stdio (exit -1). Also avoids
-    # \\wsl.localhost / \\wsl$: that SMB file share is flaky right after a
-    # distro state change (access denied) while the wsl channel always works.
+    # Push a local file into the distro by copying it from the Windows drvfs
+    # mount (/mnt/c/...) inside WSL. Avoids all three known-bad channels:
+    #   - \\wsl.localhost (SMB share): flaky after distro state changes
+    #   - wsl stdin pipe: old clients drop/corrupt large piped input
+    #   - .NET Process stdio: old clients exit -1 when fully piped
+    # Staging in %TEMP%\mrtool-deploy keeps the /mnt path space-free.
     param([string]$LocalFile, [string]$DestPath, [string]$Mode)
     $bytes = [System.IO.File]::ReadAllBytes($LocalFile)
-    $b64 = [System.Convert]::ToBase64String($bytes)
+    $stageDir = Join-Path $env:TEMP "mrtool-deploy"
+    New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+    Get-ChildItem $stageDir -Filter "mrtool-bundle-*.tar.gz" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    $stage = Join-Path $stageDir (Split-Path -Leaf $LocalFile)
+    Copy-Item -Path $LocalFile -Destination $stage -Force
+    $drive = $stage.Substring(0, 1).ToLower()
+    $mnt = "/mnt/$drive" + ($stage.Substring(2) -replace '\\', '/')
     $d = Split-Path -Parent $DestPath
-    $cmd = "mkdir -p '$d' && base64 -d > '$DestPath' && chmod $Mode '$DestPath' && wc -c < '$DestPath'"
-    $out = ($b64 | & wsl -d $Distro -u root -- /bin/bash -c $cmd 2>&1)
-    if ($LASTEXITCODE -ne 0) { Fail "could not write $DestPath into $Distro (wsl exited $LASTEXITCODE)" }
+    $cmd = "mkdir -p '$d' && cp -f '$mnt' '$DestPath' && chmod $Mode '$DestPath' && wc -c < '$DestPath'"
+    $out = & wsl -d $Distro -u root -- /bin/bash -c $cmd 2>&1
+    if ($LASTEXITCODE -ne 0) { Fail "could not copy $DestPath into $Distro (wsl exited $LASTEXITCODE). The Windows drive must be mounted inside the distro (/mnt/$drive) - check /etc/wsl.conf for a disabled automount." }
     $n = ""
-    if ($out) { $n = @($out)[-1].ToString().Trim() }
+    foreach ($l in @($out)) { $t = Get-CleanLine $l; if ($t -match '^\d+$') { $n = $t } }
     if ($n -ne "$($bytes.Length)") { Fail "size mismatch writing $DestPath (expected $($bytes.Length) bytes, got $n)" }
     return $n
 }
@@ -160,7 +173,9 @@ $WslCmd = Get-Command wsl -ErrorAction SilentlyContinue
 $Distros = @()
 if ($WslCmd) {
     $lst = & wsl -l -q 2>&1
-    if ($LASTEXITCODE -eq 0) { $Distros = @(($lst | Where-Object { $_ -match '\S' }) | ForEach-Object { $_.ToString().Trim() }) }
+    if ($LASTEXITCODE -eq 0) {
+        foreach ($l in @($lst)) { $t = Get-CleanLine $l; if ($t) { $Distros += $t } }
+    }
     else { Warn "wsl is present but 'wsl -l' failed - assuming a broken/uninitialized install" }
 }
 if (-not $WslCmd) { Warn "wsl: command not found - will install (admin)" }
@@ -348,7 +363,7 @@ if (-not $CreatedDistro) {
     # last stdout line is the username (wsl may prepend notice lines)
     $ruOut = & wsl -d $Distro -- whoami 2>&1
     $defaultUser = ""
-    if ($LASTEXITCODE -eq 0 -and $ruOut) { $defaultUser = @($ruOut)[-1].ToString().Trim() }
+    if ($LASTEXITCODE -eq 0 -and $ruOut) { $defaultUser = Get-CleanLine (@($ruOut)[-1]) }
     if (-not $defaultUser) {
         Fail "could not determine the default user of '$Distro' (whoami failed). Check 'wsl -l -v'; try 'wsl --repair $Distro' and re-run."
     }
@@ -390,7 +405,7 @@ if ($Managed -and $IsWin11) {
             Say "  wsl said: $scj"
             Say "  trying 'wsl --update' (engine) and retrying"
             $upd = & wsl --update 2>&1
-            if ($upd) { foreach ($l in @($upd)) { if ($l.ToString().Trim()) { Say "  $_" } } }
+            if ($upd) { foreach ($l in @($upd)) { $t = Get-CleanLine $l; if ($t) { Say "  $t" } } }
             $sc2 = & wsl --set-config $Distro networkingMode=mirrored 2>&1
             if ($LASTEXITCODE -ne 0) {
                 Warn "could not set mirrored mode; staying NAT (the portproxy path below covers it). To opt in later: 'wsl --update', then 'wsl --set-config $Distro networkingMode=mirrored'."
@@ -414,7 +429,7 @@ try {
     # http_code is 000 in BOTH modes and cannot tell them apart
     $codeOut = & wsl -d $Distro -- bash -c "(exec 3<>/dev/tcp/127.0.0.1/18889) 2>/dev/null && echo 1 || echo 0" 2>$null
     $code = ""
-    if ($codeOut) { $code = @($codeOut)[-1].ToString().Trim() }
+    if ($codeOut) { $code = Get-CleanLine (@($codeOut)[-1]) }
     $Shared = ($code -eq "1")
 } catch { $Shared = $null }
 finally { if ($listener) { try { $listener.Stop() } catch {} } }
@@ -452,7 +467,7 @@ if ($CdpMode -eq "nat") {
         Step "expose Chrome debug port to the WSL NAT subnet (portproxy + scoped firewall rule)" {
             $gwOut = & wsl -d $Distro -- bash -c "ip route show default | cut -d' ' -f3 | head -1" 2>$null
             $gw = ""
-            if ($gwOut) { $gw = @($gwOut)[-1].ToString().Trim() }
+            if ($gwOut) { $gw = Get-CleanLine (@($gwOut)[-1]) }
             if (-not $gw) { Fail "could not determine the WSL NAT gateway" }
             $gwSub = (($gw -split '\.')[0..2]) -join '.'
             $hostIp = (Get-NetIPAddress | Where-Object { $_.IPAddress -like ($gwSub + '*') } | Select-Object -First 1).IPAddress
